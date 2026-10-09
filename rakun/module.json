@@ -1,0 +1,11 @@
+{
+  "api": 1,
+  "name": "Rakun",
+  "version": "0.1.0",
+  "min_core": "0.1.3",
+  "author": "FranjeGueje",
+  "description": "Download your games from third-party stores via the Rakun engine.",
+  "order": 20,
+  "tab": "Rakun",
+  "no_qam": true
+}
