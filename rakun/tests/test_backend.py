@@ -222,7 +222,7 @@ class BackendTest(unittest.TestCase):
 
     def test_notify_shows_the_notification_and_survives_a_refusal(self):
         backend._notify("Download finished", "Game", "https://x/i.png")
-        backend.ctx.notify.assert_called_once_with("Download finished", "Game", "https://x/i.png")
+        backend.ctx.notify.assert_called_once_with("Download finished", "Game", "https://x/i.png", sound="toast")
         backend.ctx.notify.side_effect = Unavailable("no steam")
         backend._notify("Download finished", "Game", "")
         backend.ctx.log.warning.assert_called_once()

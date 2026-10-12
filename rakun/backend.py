@@ -29,6 +29,7 @@ WEB_MODES = ("local", "network")
 DEFAULT_WEB = "local"
 LEGACY_DIR = Path.home() / ".config/invasor-rakun"  # where the port and the version were kept before ctx.data
 SETTLE_TRIES = 20
+NOTIFY_SOUND = "toast"  # one of Steam's own notification sounds, see the core's ctx.notify
 
 
 SUPERVISE_SECONDS = 5
@@ -41,11 +42,11 @@ def _notify(title, body, icon):
     """Shows a Steam notification, as Noty does; if Steam can't show it nothing else is affected."""
     try:
         try:
-            ctx.notify(title, body, icon)
+            ctx.notify(title, body, icon, sound=NOTIFY_SOUND)
         except ctx.InvalidArgument:
             if not icon:
                 raise
-            ctx.notify(title, body)
+            ctx.notify(title, body, sound=NOTIFY_SOUND)
     except (ctx.Unavailable, ctx.InvalidArgument) as e:
         ctx.log.warning("cannot show the notification %r: %s", title, e)
 
