@@ -312,6 +312,33 @@ def install():
     return install_status()
 
 
+def _self_update(*args):
+    """Runs `rakunctl self-update`, which only works on an install made by install.sh."""
+    if not is_installed():
+        raise ctx.Unavailable("rakun is not installed")
+    done = _run([str(RAKUNCTL), "self-update", *args], timeout=INSTALL_TIMEOUT)
+    if done.returncode != 0:
+        raise ctx.Unavailable("rakunctl failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
+    return done.stdout.strip()
+
+
+def update_check():
+    """Asks rakunctl whether there is a newer Rakun, skipping the cache of the latest release."""
+    message = _self_update("--check")
+    _latest.update(at=0.0, tag=None)
+    return dict(install_status(), message=message)
+
+
+def update():
+    """Updates Rakun with `rakunctl self-update` (it restarts Rakun if it runs)."""
+    _self_update()
+    _latest.update(at=0.0, tag=None)
+    status = install_status()
+    if status["latest"]:
+        _remember(status["latest"])
+    return status
+
+
 def _fetch(url):
     try:
         with urllib.request.urlopen(url, timeout=30) as answer:
@@ -378,4 +405,4 @@ def logs_clear():
 
 METHODS = {"open_web": open_web, "service_status": service_status,
            "service_set": service_set, "port_set": port_set, "web_set": web_set, "install_status": install_status,
-           "install": install, "logs_get": logs_get, "logs_clear": logs_clear}
+           "install": install, "update_check": update_check, "update": update, "logs_get": logs_get, "logs_clear": logs_clear}

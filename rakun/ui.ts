@@ -30,8 +30,14 @@ const t = {
   updateHint: "Downloads and installs the latest Rakun",
   installing: "Installing…",
   installConfirm: "Download and install Rakun?",
-  updateConfirm: "Update Rakun to the latest version?",
+  updateConfirm: "Update Rakun to the latest version? It restarts if it is running.",
   installDone: "Rakun installed",
+  check: "Check for updates",
+  checkHint: "Asks whether there is a newer Rakun",
+  checking: "Checking…",
+  upToDate: "Rakun is up to date",
+  updateAvailable: (l: string) => `Rakun ${l} is available`,
+  updateDone: "Rakun updated",
   ok: "OK",
   cancel: "Cancel",
   stopBusy: "Rakun has pending tasks (a download or a library refresh). Stop it anyway?",
@@ -115,6 +121,26 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
               ? t.installedLatest(i.version)
               : t.installedUnknown;
         const installSection: HTMLElement[] = [ui.info(installInfo)];
+        if (i.installed) {
+          const check = ui.button({
+            label: t.check,
+            hint: t.checkHint,
+            onClick: async () => {
+              installing = true;
+              check.setLabel(t.checking);
+              check.setDisabled(true);
+              try {
+                const r = await ctx.call<Install>("update_check");
+                ctx.toast(r.update && r.latest ? t.updateAvailable(r.latest) : t.upToDate, "ok");
+              } catch (error) {
+                failed(error);
+              }
+              installing = false;
+              await draw(true);
+            },
+          });
+          installSection.push(check);
+        }
         if (!i.installed || i.update) {
           const label = i.installed ? t.update : t.download;
           const button = ui.button({
@@ -126,8 +152,8 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
               button.setLabel(t.installing);
               button.setDisabled(true);
               try {
-                await ctx.call("install");
-                ctx.toast(t.installDone, "ok");
+                await ctx.call(i.installed ? "update" : "install");
+                ctx.toast(i.installed ? t.updateDone : t.installDone, "ok");
               } catch (error) {
                 failed(error);
               }
@@ -141,7 +167,7 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
 
         while (el.firstChild) el.removeChild(el.firstChild);
         el.append(
-          ui.section(t.installTitle, installSection, { open: false }),
+          ui.section(t.installTitle, installSection, { open: i.update }),
           ui.info(`${s.reachable ? "🟢" : "🔴"} ${s.reachable ? t.up : t.down}:${s.port}`),
           ui.toggle({
             label: t.service,

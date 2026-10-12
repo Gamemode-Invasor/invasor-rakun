@@ -9,8 +9,9 @@ Three tabs:
 
 - **Service**, top to bottom:
   - an **Installation** section: whether Rakun is installed in `~/.local/opt/rakun/` and its version
-    against the latest published release; a **Download** button installs it and, when the version differs,
-    **Update** installs the latest one (with the project's `install.sh`);
+    against the latest published release; a **Download** button installs it (with the project's `install.sh`); once installed, **Check for updates**
+    asks `rakunctl self-update --check` and, when the version differs, **Update** runs `rakunctl self-update`
+    (it restarts Rakun if it runs);
   - a green/red indicator: green when Rakun answers on `127.0.0.1:<port>` (checked every 3 s);
   - the **Start Rakun** slider, on while the `rakun.service` user service is running. Switching it on runs
     `~/.local/opt/rakun/rakunctl start --port <port> --web <local|network>`; off runs `~/.local/opt/rakun/rakunctl stop`;
