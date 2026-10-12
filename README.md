@@ -28,8 +28,9 @@ Three tabs:
 
 
 Rakun also shows a Steam notification, the way the Noty module does, when a download finishes or a game is
-uninstalled, even if the Logs tab is closed (the module keeps `rakunctl events` open while Rakun runs). Progress
-is not notified, and there are no settings for it.
+uninstalled, even if the Logs tab is closed (the module keeps `rakunctl events` open while Rakun runs). They play
+Steam's **toast** sound instead of the default achievement one. Progress is not notified, and there are no settings
+for it.
 
 When an installation ends it also asks Steam to show the grid images Rakun downloaded for the game (capsule, hero,
 logo and wide capsule), the way the Artwork module does after applying one, so they appear without restarting
@@ -39,7 +40,7 @@ module waits (up to 3 minutes) for Rakun to register the game and write the imag
 ## Requirements
 
 - [Rakun](https://github.com/FranjeGueje/rakun) running on the console.
-- Invasor 0.1.3 or newer.
+- Invasor 0.2.0-rc1 or newer (the notification sound needs `ctx.notify`'s `sound` argument).
 - Python 3.9+ (standard library only).
 
 ## How it works
@@ -59,7 +60,7 @@ rakun/
 
 ```bash
 python3 ../invasor/tools/pack_module.py rakun     # typecheck, build, tests -> rakun-<version>.zip
-python3 ../invasor/tools/install_module.py rakun-0.1.0.zip
+python3 ../invasor/tools/install_module.py rakun-0.2.0.zip
 ```
 
 or ⚙ Settings › Install module on the console.
