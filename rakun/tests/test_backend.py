@@ -65,7 +65,7 @@ class BackendTest(unittest.TestCase):
     def test_methods(self):
         self.assertEqual(set(backend.METHODS),
                          {"open_web", "service_status", "service_set", "port_set", "web_set", "install_status", "install",
-                          "logs_get", "logs_clear"})
+                          "update_check", "update", "logs_get", "logs_clear"})
 
     def test_open_web_hands_the_steam_link_to_xdg_open_with_the_session(self):
         with mock.patch.object(backend.subprocess, "Popen") as popen, \
@@ -207,6 +207,29 @@ class BackendTest(unittest.TestCase):
                 mock.patch.object(backend, "_fetch", return_value=""), fake_run(1, "boom"):
             with self.assertRaises(Unavailable):
                 backend.install()
+
+    def test_update_check_asks_rakunctl_and_skips_the_cache(self):
+        backend._latest.update(at=1e12, tag="v0.1.0")
+        with mock.patch.object(backend, "latest_tag", return_value="v0.3.0"), \
+                mock.patch.object(backend, "installed_version", return_value="0.2.0"), \
+                fake_run(0, stdout="rakun 0.2.0 is up to date") as run:
+            got = backend.update_check()
+        self.assertEqual(run.call_args[0][0][1:], ["self-update", "--check"])
+        self.assertEqual((got["update"], got["latest"], got["message"]), (True, "0.3.0", "rakun 0.2.0 is up to date"))
+
+    def test_update_runs_self_update(self):
+        with mock.patch.object(backend, "install_status", return_value={"latest": "0.3.0"}), \
+                mock.patch.object(backend, "_remember") as remember, fake_run(0) as run:
+            self.assertEqual(backend.update(), {"latest": "0.3.0"})
+        self.assertEqual(run.call_args[0][0][1:], ["self-update"])
+        remember.assert_called_once_with("0.3.0")
+
+    def test_update_reports_failures_and_a_missing_install(self):
+        with fake_run(1, "boom"), self.assertRaises(Unavailable):
+            backend.update()
+        self.is_installed.return_value = False
+        with self.assertRaises(Unavailable):
+            backend.update_check()
 
     def test_logs_only_open_the_stream_while_rakun_runs(self):
         with mock.patch.object(backend, "running", return_value=False), \

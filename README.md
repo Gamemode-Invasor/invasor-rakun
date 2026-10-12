@@ -8,9 +8,12 @@ Epic Games, GOG, Amazon Games and Zoom Platform, installs their games and adds t
 Three tabs:
 
 - **Service**, top to bottom:
-  - an **Installation** section: whether Rakun is installed in `~/.local/opt/rakun/` and its version
-    against the latest published release; a **Download** button installs it and, when the version differs,
-    **Update** installs the latest one (with the project's `install.sh`);
+  - an **Installation** section (it opens by itself when an update is available): whether Rakun is installed in
+    `~/.local/opt/rakun/` and its version against the latest published release. A **Download** button installs it
+    (with the project's `install.sh`). Once installed, **Check for updates** runs `rakunctl self-update --check`
+    (skipping the cache of the latest release) and, when the version differs, **Update** runs
+    `rakunctl self-update`, which restarts Rakun if it runs. `self-update` only works on an install made by
+    `install.sh`;
   - a green/red indicator: green when Rakun answers on `127.0.0.1:<port>` (checked every 3 s);
   - the **Start Rakun** slider, on while the `rakun.service` user service is running. Switching it on runs
     `~/.local/opt/rakun/rakunctl start --port <port> --web <local|network>`; off runs `~/.local/opt/rakun/rakunctl stop`;
@@ -48,7 +51,7 @@ module waits (up to 3 minutes) for Rakun to register the game and write the imag
 ```
 rakun/
   module.json   metadata
-  backend.py    open_web, install and update, the rakun switch (rakunctl) and the saved port and web access: the methods the UI calls
+  backend.py    open_web, install, check and update (`rakunctl self-update`), the rakun switch (rakunctl) and the saved port and web access: the methods the UI calls
   session.py    the graphical session's variables, for xdg-open
   grids.py      finds the images Rakun left in Steam's grid folder
   logs.py       reads `rakunctl events` in a thread and formats the lines
