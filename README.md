@@ -15,20 +15,22 @@ Three tabs:
     `rakunctl self-update`, which restarts Rakun if it runs. `self-update` only works on an install made by
     `install.sh`;
   - a green/red indicator: green when Rakun answers on `127.0.0.1:<port>` (checked every 3 s);
-  - the **Start Rakun** slider, on while the `rakun.service` user service is running. Switching it on runs
-    `~/.local/opt/rakun/rakunctl start --port <port> --web <local|network>`; off runs `~/.local/opt/rakun/rakunctl stop`;
-  - the port (17999 by default), changed with − / +. While the slider is on it is read-only. It is saved in
-    the module's own data (`~/.config/invasor/modules/rakun/data.json`);
+  - the **Start Rakun** slider, on while Rakun runs (asked with `rakunctl status --json`, so it does not need
+    systemd). Switching it on runs `~/.local/opt/rakun/rakunctl start --port <port> --web <local|network>`; off runs
+    `~/.local/opt/rakun/rakunctl stop`. If Rakun has pending tasks (a download or a library refresh) it refuses to
+    stop and the module asks whether to **Stop anyway** (`stop --force`) or **Keep running**. The slider is disabled
+    while Rakun is not installed;
+  - the port (17999 by default, from 1024 to 65535), changed with − / +. While the slider is on it is read-only. It
+    is saved in the module's own data (`~/.config/invasor/modules/rakun/data.json`);
   - **Reachable from the network**, a slider below the port (same rules: only while Rakun is stopped): off = `local`
     (default), on = `network`, passed to `rakunctl start` as `--web local|network`, saved with the port;
   - **Open in the browser**, which opens Rakun's web interface on that port in Steam's own browser (a
-    `steam://openurl` link, so it works in Game Mode).
+    `steam://openurl` link, so it works in Game Mode). It is only enabled while Rakun runs.
 - **Logs**: Rakun's events, formatted (`rakunctl events` is read in the background while Rakun runs): queue
   changes, game status and download progress, with the last 200 lines and a refresh every 3 s, plus a **Clear**
   button. When Rakun stops the list ends with `-- Rakun stopped --`.
 - **Credits**: mentions Rakun and links to its repository,
   <https://github.com/FranjeGueje/rakun>.
-
 
 Rakun also shows a Steam notification, the way the Noty module does, when a download finishes or a game is
 uninstalled, even if the Logs tab is closed (the module keeps `rakunctl events` open while Rakun runs). They play
@@ -43,7 +45,7 @@ module waits (up to 3 minutes) for Rakun to register the game and write the imag
 ## Requirements
 
 - [Rakun](https://github.com/FranjeGueje/rakun) running on the console.
-- Invasor 0.2.0-rc1 or newer (the notification sound needs `ctx.notify`'s `sound` argument).
+- Invasor 0.2.0 or newer (the notification sound needs `ctx.notify`'s `sound` argument).
 - Python 3.9+ (standard library only).
 
 ## How it works
@@ -51,13 +53,17 @@ module waits (up to 3 minutes) for Rakun to register the game and write the imag
 ```
 rakun/
   module.json   metadata
-  backend.py    open_web, install, check and update (`rakunctl self-update`), the rakun switch (rakunctl) and the saved port and web access: the methods the UI calls
+  backend.py    open_web, install, check and update (`rakunctl self-update`), the rakun switch (rakunctl), the saved port and web access, the notifications and the grid refresh: the methods the UI calls
   session.py    the graphical session's variables, for xdg-open
   grids.py      finds the images Rakun left in Steam's grid folder
   logs.py       reads `rakunctl events` in a thread and formats the lines
   ui.ts         Service, Logs and Credits tabs
   tests/        unittest
 ```
+
+CI runs the tests against the core's `main`; pushing a `vX.Y.Z` tag (it must match the `version` in `module.json`)
+publishes `rakun-<version>.zip` as a GitHub release, built against the core version in `core-ref`
+(`.github/workflows/release.yml`).
 
 ## Building
 
