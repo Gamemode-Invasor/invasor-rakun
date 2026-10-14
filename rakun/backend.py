@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import grids
+from . import grids, texts
 from .logs import LogReader
 from .session import session_env
 
@@ -44,14 +44,14 @@ _seen = {}  # a game's app name -> when its task last heard from Rakun
 _tasks_lock = threading.Lock()
 
 
-def _open_task(app, title):
+def _open_task(app, label):
     """The game's task, opened on first sight (the core announces it starting and ending); None if it can't be."""
     task = _tasks.get(app)
     if task is None:
         try:
-            task = ctx.task("Rakun: %s" % title)
+            task = ctx.task(label)
         except ctx.Unavailable as e:
-            ctx.log.warning("cannot open a task for %s: %s", title, e)
+            ctx.log.warning("cannot open the task %r: %s", label, e)
             return None
         _tasks[app] = task
     _seen[app] = time.monotonic()
@@ -76,7 +76,7 @@ def _expire_tasks(now=time.monotonic):
         for app in stale:
             _seen.pop(app, None)
     for task in tasks:
-        task.fail("No news from Rakun")
+        task.fail(texts.NO_NEWS)
 
 
 def _notify(title, body, icon):
@@ -99,7 +99,7 @@ def _follow_task(event):
             _seen.pop(event.app, None)
         if task:  # it should not have one: don't leave it running
             task.done(event.text)
-        _notify(event.text, event.title, event.icon)
+        _notify(event.title, event.text, event.icon)
         return
     with _tasks_lock:
         if event.kind == "stopped":
@@ -115,7 +115,7 @@ def _follow_task(event):
             if task:
                 task.update(event.fraction, event.text)
             return
-    _close_tasks("Rakun stopped")
+    _close_tasks(texts.RAKUN_STOPPED)
 
 
 _refreshing = set()
@@ -202,7 +202,7 @@ def setup(context):
 def teardown():
     _stop.set()
     reader.stop()
-    _close_tasks("Module unloaded")
+    _close_tasks(texts.MODULE_UNLOADED)
     if _supervisor:
         _supervisor.join(timeout=2)
 
@@ -373,20 +373,20 @@ def install_status():
 
 def install():
     """Installs or updates Rakun with the install script of the latest release."""
-    with ctx.task("Installing Rakun") as task:
-        task.update(None, "Looking for the latest release")
+    with ctx.task(texts.INSTALLING_RAKUN) as task:
+        task.update(None, texts.LOOKING_FOR_RELEASE)
         tag = latest_tag()
-        task.update(None, "Downloading the installer")
+        task.update(None, texts.DOWNLOADING_INSTALLER)
         script = _fetch("%s/%s/scripts/install.sh" % (RAW, tag))
         tarball = "%s/download/%s/rakun-%s-linux-x64.tar.gz" % (RELEASES, tag, tag.lstrip("v"))
-        task.update(None, "Installing Rakun %s" % tag.lstrip("v"))
+        task.update(None, texts.installing(tag.lstrip("v")))
         done = _run(["bash", "-s", "--", tarball], timeout=INSTALL_TIMEOUT, stdin=script)
         if done.returncode != 0:
             raise ctx.Unavailable("the installation failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
         _remember(tag.lstrip("v"))
-        task.update(None, "Checking the installation")
+        task.update(None, texts.CHECKING_INSTALLATION)
         status = install_status()
-        task.done("Rakun %s installed" % tag.lstrip("v"))
+        task.done(texts.installed(tag.lstrip("v")))
         return status
 
 
@@ -409,15 +409,15 @@ def update_check():
 
 def update():
     """Updates Rakun with `rakunctl self-update` (it restarts Rakun if it runs)."""
-    with ctx.task("Updating Rakun") as task:
-        task.update(None, "Running self-update")
+    with ctx.task(texts.UPDATING_RAKUN) as task:
+        task.update(None, texts.RUNNING_SELF_UPDATE)
         _self_update()
         _latest.update(at=0.0, tag=None)
-        task.update(None, "Checking the new version")
+        task.update(None, texts.CHECKING_VERSION)
         status = install_status()
         if status["latest"]:
             _remember(status["latest"])
-        task.done("Rakun %s" % status["latest"] if status["latest"] else "Rakun updated")
+        task.done(texts.updated(status["latest"] or ""))
         return status
 
 

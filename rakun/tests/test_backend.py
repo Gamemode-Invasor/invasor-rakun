@@ -271,23 +271,23 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(start.call_args[0][0], [str(backend.RAKUNCTL), "events"])
 
     def test_a_game_is_one_task_from_its_first_event_to_done(self):
-        backend._on_event(Event("start", "app1", "G", None, "Installing", False, ""))
-        backend._on_event(Event("progress", "app1", "G", 0.5, "4 MB", False, ""))
-        self.assertEqual([t.label for t in backend.ctx.tasks], ["Rakun: G"])
+        backend._on_event(Event("start", "app1", "Rakun: Installing G", None, "Starting", False, ""))
+        backend._on_event(Event("progress", "app1", "Rakun: Installing G", 0.5, "4 MB", False, ""))
+        self.assertEqual([t.label for t in backend.ctx.tasks], ["Rakun: Installing G"])
         with mock.patch.object(backend.threading, "Thread") as thread:
-            backend._on_event(Event("done", "app1", "G", 1.0, "Installed", True, ""))
+            backend._on_event(Event("done", "app1", "Rakun: Installing G", 1.0, "Installed", True, ""))
         self.assertEqual(backend.ctx.tasks[0].calls,
-                         [("update", None, "Installing"), ("update", 0.5, "4 MB"), ("done", "Installed")])
+                         [("update", None, "Starting"), ("update", 0.5, "4 MB"), ("done", "Installed")])
         self.assertEqual(thread.call_args[1]["args"], ("app1",))
         backend._refreshing.discard("app1")
         backend.ctx.notify.assert_not_called()
 
     def test_an_uninstallation_is_only_a_notification_and_refreshes_nothing(self):
         with mock.patch.object(backend.threading, "Thread") as thread:
-            backend._on_event(Event("notice", "app1", "G", None, "Game uninstalled", False, "https://x/i.png"))
+            backend._on_event(Event("notice", "app1", "Rakun: G", None, "Uninstalled", False, "https://x/i.png"))
         thread.assert_not_called()
         self.assertEqual(backend.ctx.tasks, [])
-        backend.ctx.notify.assert_called_once_with("Game uninstalled", "G", "https://x/i.png", sound="toast")
+        backend.ctx.notify.assert_called_once_with("Rakun: G", "Uninstalled", "https://x/i.png", sound="toast")
 
     def test_a_notice_closes_a_task_left_open_for_that_game(self):
         backend._on_event(Event("start", "app1", "G", None, "Installing", False, ""))
@@ -344,6 +344,7 @@ class BackendTest(unittest.TestCase):
             backend.install()
             backend.update()
         self.assertEqual([t.label for t in backend.ctx.tasks], ["Installing Rakun", "Updating Rakun"])
+        self.assertEqual([t.calls[-1][1] for t in backend.ctx.tasks], ["Installed 0.3.0", "Updated to 0.3.0"])
         self.assertEqual([t.calls[-1][0] for t in backend.ctx.tasks], ["done", "done"])
         with mock.patch.object(backend, "latest_tag", return_value="v0.3.0"), \
                 mock.patch.object(backend, "_fetch", return_value=""), fake_run(1, "boom"):

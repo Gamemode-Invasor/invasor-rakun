@@ -57,15 +57,15 @@ class EventTest(unittest.TestCase):
     def test_done_after_a_queue_entry_is_a_download(self):
         f = logs.Formatter()
         f.text(QUEUE_ART)
-        self.assertEqual(tuple(f.event(STATUS)), ("start", APP, "A Tiny Sticker Tale", None, "Installing", False, ""))
-        self.assertEqual(tuple(f.event(DONE)), ("done", APP, "A Tiny Sticker Tale", 1.0, "Installed", True, ""))
+        self.assertEqual(tuple(f.event(STATUS)), ("start", APP, "Rakun: Installing A Tiny Sticker Tale", None, "Starting", False, ""))
+        self.assertEqual(tuple(f.event(DONE)), ("done", APP, "Rakun: Installing A Tiny Sticker Tale", 1.0, "Installed", True, ""))
 
     def test_an_uninstallation_is_a_notice_with_no_task(self):
         f = logs.Formatter()
         f.text(LIBRARY)
         self.assertIsNone(f.event(UNINSTALLING))
         self.assertEqual(tuple(f.event(DONE)),
-                         ("notice", APP, "A Tiny Sticker Tale", None, "Game uninstalled", False, "https://img/sq.jpg"))
+                         ("notice", APP, "Rakun: A Tiny Sticker Tale", None, "Uninstalled", False, "https://img/sq.jpg"))
         self.assertIsNone(f.event(DONE_AGAIN))
 
     def test_an_import_is_a_notice_with_no_task(self):
@@ -73,7 +73,7 @@ class EventTest(unittest.TestCase):
         f.text(LIBRARY)
         self.assertIsNone(f.event(IMPORTING))
         self.assertEqual(tuple(f.event(DONE)),
-                         ("notice", APP, "A Tiny Sticker Tale", None, "Game imported", True, "https://img/sq.jpg"))
+                         ("notice", APP, "Rakun: A Tiny Sticker Tale", None, "Imported", True, "https://img/sq.jpg"))
 
     def test_a_repeated_done_still_closes_a_task_but_asks_for_no_refresh(self):
         f = logs.Formatter()
@@ -118,9 +118,29 @@ class EventTest(unittest.TestCase):
             self.assertEqual(logs.Formatter().event(line).fraction, want, percent)
         self.assertIsNone(logs.Formatter().event('progressUpdate [{"appName":"a","status":"x"}]').fraction)
 
-    def test_failures_end_the_task(self):
-        line = 'gameStatusUpdate [{"appName":"a","status":"error"}]'
-        self.assertEqual(logs.Formatter().event(line).kind, "fail")
+    def test_failures_end_the_task_with_a_short_text(self):
+        for status, text in (("error", "Failed"), ("canceled", "Cancelled"), ("aborted", "Cancelled")):
+            got = logs.Formatter().event('gameStatusUpdate [{"appName":"a","status":"%s"}]' % status)
+            self.assertEqual((got.kind, got.text), ("fail", text))
+
+    def test_each_operation_is_told_in_its_own_words(self):
+        for status, doing, did in (("updating", "Updating", "Updated"), ("repairing", "Repairing", "Repaired"),
+                                   ("moving", "Moving", "Moved")):
+            f = logs.Formatter()
+            started = f.event('gameStatusUpdate [{"appName":"a","status":"%s"}]' % status)
+            self.assertEqual(started.title, "Rakun: %s a" % doing)
+            finished = f.event('gameStatusUpdate [{"appName":"a","status":"done"}]')
+            self.assertEqual((finished.title, finished.text), ("Rakun: %s a" % doing, did))
+
+    def test_a_progress_without_a_start_names_the_operation_from_its_own_status(self):
+        got = logs.Formatter().event('progressUpdate [{"appName":"a","status":"updating","progress":{"percent":1}}]')
+        self.assertEqual(got.title, "Rakun: Updating a")
+
+    def test_a_long_title_gives_way_but_the_prefix_and_the_verb_stay(self):
+        label = logs.texts.label_of("Installing", "x" * 200)
+        self.assertEqual(len(label), logs.texts.MAX_LABEL)
+        self.assertTrue(label.startswith("Rakun: Installing x") and label.endswith("…"))
+        self.assertEqual(len(logs.texts.title_of("y" * 200)), logs.texts.MAX_LABEL)
 
     def test_the_library_event_is_readable(self):
         self.assertEqual(logs.Formatter().text(LIBRARY), "library: A Tiny Sticker Tale (nile)")
@@ -138,7 +158,7 @@ class EventTest(unittest.TestCase):
             self.assertIsNone(f.event(line))
 
     def test_unknown_games_use_the_app_name(self):
-        self.assertEqual(logs.Formatter().event(DONE).title, APP)
+        self.assertEqual(logs.Formatter().event(DONE).title, "Rakun: Installing " + APP)
 
 
 class ReaderTest(unittest.TestCase):

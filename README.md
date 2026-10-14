@@ -36,7 +36,10 @@ The heavy operations are tasks in Invasor's panel, so the core itself announces 
 its toast sound) and the panel shows their progress bar: every game Rakun installs (percentage, size,
 speed and ETA, read from `rakunctl events` while Rakun runs, even if the Logs tab is closed), and installing or
 updating Rakun itself (without a bar, only the phase). A task still open when Rakun stops, when its download is paused, or after five minutes without news from Rakun, is marked as failed.
-Uninstalling or importing a game is too quick for a task: it only shows a Steam notification. Quick actions (start, stop, check
+A game's task is called `Rakun: <doing> <game>` (e.g. `Rakun: Installing A Tiny Sticker Tale`) and ends with what was
+done (`Installed`, `Updated`, `Repaired`, `Moved`) or how it failed (`Failed`, `Cancelled`, `Paused`). Uninstalling or
+importing a game is too quick for a task: it only shows a Steam notification, `Rakun: <game>` with `Uninstalled` or
+`Imported` as its text. Quick actions (start, stop, check
 for updates) only show a toast in the module, as before.
 
 When an installation ends it also asks Steam to show the grid images Rakun downloaded for the game (capsule, hero,
@@ -47,7 +50,7 @@ module waits (up to 3 minutes) for Rakun to register the game and write the imag
 ## Requirements
 
 - [Rakun](https://github.com/FranjeGueje/rakun) running on the console.
-- Invasor 0.2.1-rc1 or newer (tasks that notify when they start and end need `ctx.task`'s `notify` argument).
+- Invasor 0.2.1 or newer (tasks that notify when they start and end need `ctx.task`'s `notify` argument).
 - Python 3.9+ (standard library only).
 
 ## How it works

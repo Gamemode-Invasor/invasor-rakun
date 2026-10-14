@@ -5,21 +5,20 @@ import subprocess
 import threading
 import time
 
+from . import texts
+
 MAX_LINES = 500
 MAX_TEXT = 200
 STOPPED = "-- Rakun stopped --"
-MAX_TITLE = 256
 DUPLICATE_SECONDS = 10
 LATE_PROGRESS_SECONDS = 10  # Rakun's progress may arrive after the end of the operation
-# kind: "start" | "progress" | "done" | "fail" | "notice" (quick: just a notification) | "stopped" (the stream ended); fraction: 0..1 or None
+# kind: "start" | "progress" | "done" | "fail" | "notice" (quick: just a notification) | "stopped" (the stream ended).
+# title: the task's label, or the notification's title; text: the task's text, or the notification's body;
+# fraction: 0..1 or None
 Event = collections.namedtuple("Event", "kind app title fraction text installed icon")
 
-# Rakun ends both an installation and an uninstallation with status "done"; what came before tells which one.
-DOWNLOADED = "Installed"
-UNINSTALLED = "Game uninstalled"
-IMPORTED = "Game imported"
-ACTIVE = ("installing", "updating", "repairing", "moving", "extracting")
-FAILED = ("error", "failed", "canceled", "cancelled", "aborted")
+# Rakun ends every operation on a game with status "done"; what came before tells which one it was.
+ACTIVE = tuple(texts.OPERATIONS)
 
 
 def _clip(text):
@@ -50,6 +49,7 @@ class Formatter:
         self.icons = {}
         self.noticed = {}
         self.last_status = {}
+        self.operation = {}  # a game's operation in progress: (what is being done, how it ends)
         self.ended = {}
         self.queue_state = ""
         self.opened = set()  # games with a start or progress event and no end yet
@@ -81,21 +81,26 @@ class Formatter:
             app, status = item["appName"], item["status"]
         except (ValueError, KeyError, IndexError, TypeError):
             return None
-        title = self.title(app)[:MAX_TITLE]
+        game = self.title(app)
+        if status in texts.OPERATIONS:
+            self.operation[app] = texts.OPERATIONS[status]
+        doing, did = self.operation.get(app, texts.DEFAULT_OPERATION)
+        label = texts.label_of(doing, game)
         if name == "progressUpdate":
             if now() - self.ended.get(app, -LATE_PROGRESS_SECONDS) < LATE_PROGRESS_SECONDS:
                 return None
             progress = item.get("progress") if isinstance(item.get("progress"), dict) else {}
             self.opened.add(app)
-            return Event("progress", app, title, _fraction(progress.get("percent")), self.progress_text(item), False, "")
+            return Event("progress", app, label, _fraction(progress.get("percent")), self.progress_text(item), False, "")
         before = self.last_status.get(app)
         self.last_status[app] = status
         if status in ACTIVE:
             self.opened.add(app)
-            return Event("start", app, title, None, status.capitalize(), False, "")
-        if status in FAILED:
+            return Event("start", app, label, None, texts.STARTING, False, "")
+        if status in texts.FAILED:
             self.opened.discard(app)
-            return Event("fail", app, title, None, status.capitalize(), False, "")
+            self.operation.pop(app, None)
+            return Event("fail", app, label, None, texts.FAILED[status], False, "")
         gone = status == "uninstalled" or (status == "done" and before in ("uninstalling", "uninstalled"))
         if status != "done" and not gone:
             return None
@@ -107,16 +112,18 @@ class Formatter:
             self.noticed[app] = at
         left_open = app in self.opened
         self.opened.discard(app)
+        self.operation.pop(app, None)
         self.ended[app] = at
         if repeated and not left_open:
             return None
         if left_open and self.queue_state == "paused":  # pausing aborts the download, which Rakun ends with "done"
-            return Event("fail", app, title, None, "Paused", False, "")
+            return Event("fail", app, label, None, texts.PAUSED, False, "")
+        notice = texts.title_of(game)
         if gone:  # an uninstallation is too quick for a task: only a notification
-            return None if repeated else Event("notice", app, title, None, UNINSTALLED, False, self.icons.get(app, ""))
+            return None if repeated else Event("notice", app, notice, None, texts.UNINSTALLED, False, self.icons.get(app, ""))
         if before == "importing":  # so is an import
-            return None if repeated else Event("notice", app, title, None, IMPORTED, True, self.icons.get(app, ""))
-        return Event("done", app, title, 1.0, DOWNLOADED, not repeated, "")
+            return None if repeated else Event("notice", app, notice, None, texts.IMPORTED, True, self.icons.get(app, ""))
+        return Event("done", app, label, 1.0, did, not repeated, "")
 
     def progress_text(self, item):
         p = item.get("progress") or {}
