@@ -29,7 +29,6 @@ WEB_MODES = ("local", "network")
 DEFAULT_WEB = "local"
 LEGACY_DIR = Path.home() / ".config/invasor-rakun"  # where the port and the version were kept before ctx.data
 SETTLE_TRIES = 20
-NOTIFY_SOUND = "toast"  # one of Steam's own notification sounds, see the core's ctx.notify
 
 
 SUPERVISE_SECONDS = 5
@@ -38,17 +37,47 @@ _stop = threading.Event()
 _supervisor = None
 
 
-def _notify(title, body, icon):
-    """Shows a Steam notification, as Noty does; if Steam can't show it nothing else is affected."""
-    try:
+_tasks = {}  # a game's app name -> its open task in Invasor's panel
+_tasks_lock = threading.Lock()
+
+
+def _open_task(app, title):
+    """The game's task, opened on first sight (the core announces it starting and ending); None if it can't be."""
+    task = _tasks.get(app)
+    if task is None:
         try:
-            ctx.notify(title, body, icon, sound=NOTIFY_SOUND)
-        except ctx.InvalidArgument:
-            if not icon:
-                raise
-            ctx.notify(title, body, sound=NOTIFY_SOUND)
-    except (ctx.Unavailable, ctx.InvalidArgument) as e:
-        ctx.log.warning("cannot show the notification %r: %s", title, e)
+            task = ctx.task("Rakun: %s" % title)
+        except ctx.Unavailable as e:
+            ctx.log.warning("cannot open a task for %s: %s", title, e)
+            return None
+        _tasks[app] = task
+    return task
+
+
+def _close_tasks(text):
+    """Fails every task still open (Rakun stopped or the module goes away)."""
+    with _tasks_lock:
+        tasks = list(_tasks.values())
+        _tasks.clear()
+    for task in tasks:
+        task.fail(text)
+
+
+def _follow_task(event):
+    with _tasks_lock:
+        if event.kind == "stopped":
+            pass
+        elif event.kind in ("done", "fail"):
+            task = _tasks.pop(event.app, None)
+            if task:
+                (task.done if event.kind == "done" else task.fail)(event.text)
+            return
+        else:
+            task = _open_task(event.app, event.title)
+            if task:
+                task.update(event.fraction, event.text)
+            return
+    _close_tasks("Rakun stopped")
 
 
 _refreshing = set()
@@ -86,18 +115,18 @@ def _refresh_grids(app):
             _refreshing.discard(app)
 
 
-def _on_notice(notice):
-    _notify(notice.title, notice.body, notice.icon)
-    if not notice.installed:
+def _on_event(event):
+    _follow_task(event)
+    if not event.installed:
         return
     with _refreshing_lock:
-        if notice.app in _refreshing:
+        if event.app in _refreshing:
             return
-        _refreshing.add(notice.app)
-    threading.Thread(target=_refresh_grids, args=(notice.app,), daemon=True).start()
+        _refreshing.add(event.app)
+    threading.Thread(target=_refresh_grids, args=(event.app,), daemon=True).start()
 
 
-reader = LogReader(_on_notice)
+reader = LogReader(_on_event)
 
 
 def _ensure_reader():
@@ -132,6 +161,7 @@ def setup(context):
 def teardown():
     _stop.set()
     reader.stop()
+    _close_tasks("Module unloaded")
     if _supervisor:
         _supervisor.join(timeout=2)
 
@@ -302,14 +332,21 @@ def install_status():
 
 def install():
     """Installs or updates Rakun with the install script of the latest release."""
-    tag = latest_tag()
-    script = _fetch("%s/%s/scripts/install.sh" % (RAW, tag))
-    tarball = "%s/download/%s/rakun-%s-linux-x64.tar.gz" % (RELEASES, tag, tag.lstrip("v"))
-    done = _run(["bash", "-s", "--", tarball], timeout=INSTALL_TIMEOUT, stdin=script)
-    if done.returncode != 0:
-        raise ctx.Unavailable("the installation failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
-    _remember(tag.lstrip("v"))
-    return install_status()
+    with ctx.task("Installing Rakun") as task:
+        task.update(None, "Looking for the latest release")
+        tag = latest_tag()
+        task.update(None, "Downloading the installer")
+        script = _fetch("%s/%s/scripts/install.sh" % (RAW, tag))
+        tarball = "%s/download/%s/rakun-%s-linux-x64.tar.gz" % (RELEASES, tag, tag.lstrip("v"))
+        task.update(None, "Installing Rakun %s" % tag.lstrip("v"))
+        done = _run(["bash", "-s", "--", tarball], timeout=INSTALL_TIMEOUT, stdin=script)
+        if done.returncode != 0:
+            raise ctx.Unavailable("the installation failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
+        _remember(tag.lstrip("v"))
+        task.update(None, "Checking the installation")
+        status = install_status()
+        task.done("Rakun %s installed" % tag.lstrip("v"))
+        return status
 
 
 def _self_update(*args):
@@ -331,12 +368,16 @@ def update_check():
 
 def update():
     """Updates Rakun with `rakunctl self-update` (it restarts Rakun if it runs)."""
-    _self_update()
-    _latest.update(at=0.0, tag=None)
-    status = install_status()
-    if status["latest"]:
-        _remember(status["latest"])
-    return status
+    with ctx.task("Updating Rakun") as task:
+        task.update(None, "Running self-update")
+        _self_update()
+        _latest.update(at=0.0, tag=None)
+        task.update(None, "Checking the new version")
+        status = install_status()
+        if status["latest"]:
+            _remember(status["latest"])
+        task.done("Rakun %s" % status["latest"] if status["latest"] else "Rakun updated")
+        return status
 
 
 def _fetch(url):

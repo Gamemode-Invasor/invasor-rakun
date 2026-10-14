@@ -8,17 +8,32 @@ import time
 MAX_LINES = 500
 MAX_TEXT = 200
 STOPPED = "-- Rakun stopped --"
-MAX_NOTICE = 256
+MAX_TITLE = 256
 DUPLICATE_SECONDS = 10
-Notice = collections.namedtuple("Notice", "title body icon app installed")
+# kind: "start" | "progress" | "done" | "fail" | "stopped" (the stream ended); fraction: 0..1 or None
+Event = collections.namedtuple("Event", "kind app title fraction text installed")
 
 # Rakun ends both an installation and an uninstallation with status "done"; what came before tells which one.
-DOWNLOADED = "Download finished"
-UNINSTALLED = "Game uninstalled"
+DOWNLOADED = "Installed"
+UNINSTALLED = "Uninstalled"
+ACTIVE = ("installing", "uninstalling", "updating", "repairing", "moving", "extracting")
+FAILED = ("error", "failed", "canceled", "cancelled", "aborted")
 
 
 def _clip(text):
     return text if len(text) <= MAX_TEXT else text[:MAX_TEXT - 1] + "…"
+
+
+def _fraction(percent):
+    """Rakun's percentage (a number or a numeric string) as 0..1, None if it is not one."""
+    if isinstance(percent, str):
+        try:
+            percent = float(percent.strip().rstrip("%"))
+        except ValueError:
+            return None
+    if isinstance(percent, bool) or not isinstance(percent, (int, float)) or percent != percent:
+        return None
+    return min(max(percent / 100, 0.0), 1.0)
 
 
 def _megabytes(value):
@@ -45,18 +60,26 @@ class Formatter:
                     self.icons[info["app_name"]] = info[key]
                     break
 
-    def notice(self, line, now=time.monotonic):
-        """A Notice when the line is an event worth a notification (installed: a game was installed), else None."""
+    def event(self, line, now=time.monotonic):
+        """An Event when the line is one a task follows (a game's operation starting, advancing or ending), else None."""
         name, _, rest = line.strip().partition(" ")
-        if name != "gameStatusUpdate":
+        if name not in ("gameStatusUpdate", "progressUpdate"):
             return None
         try:
             item = json.loads(rest)[0]
             app, status = item["appName"], item["status"]
         except (ValueError, KeyError, IndexError, TypeError):
             return None
+        title = self.title(app)[:MAX_TITLE]
+        if name == "progressUpdate":
+            progress = item.get("progress") if isinstance(item.get("progress"), dict) else {}
+            return Event("progress", app, title, _fraction(progress.get("percent")), self.progress_text(item), False)
         before = self.last_status.get(app)
         self.last_status[app] = status
+        if status in ACTIVE:
+            return Event("start", app, title, None, status.capitalize(), False)
+        if status in FAILED:
+            return Event("fail", app, title, None, status.capitalize(), False)
         if status != "done":
             return None
         # Rakun reports "done" twice (the second time without the runner): tell it once.
@@ -65,8 +88,13 @@ class Formatter:
             return None
         self.noticed[app] = at
         gone = before in ("uninstalling", "uninstalled")
-        return Notice(UNINSTALLED if gone else DOWNLOADED, self.title(app)[:MAX_NOTICE], self.icons.get(app, ""),
-                      app, not gone)
+        return Event("done", app, title, 1.0, UNINSTALLED if gone else DOWNLOADED, not gone)
+
+    def progress_text(self, item):
+        p = item.get("progress") or {}
+        parts = [p.get("bytes"), "↓ " + _megabytes(p.get("downSpeed")) if p.get("downSpeed") is not None else None,
+                 "ETA " + p["eta"] if p.get("eta") else None]
+        return " · ".join(str(x) for x in parts if x)[:MAX_TEXT]
 
     def text(self, line):
         name, _, rest = line.partition(" ")
@@ -113,8 +141,8 @@ def format_event(line, formatter=None, now=None):
 class LogReader:
     """Runs the events command in a daemon thread and keeps the last formatted lines."""
 
-    def __init__(self, on_notice=None):
-        self._on_notice = on_notice
+    def __init__(self, on_event=None):
+        self._on_event = on_event
         self._lock = threading.Lock()
         self._lines = collections.deque(maxlen=MAX_LINES)
         self._next = 0
@@ -138,21 +166,26 @@ class LogReader:
             self._lines.append((self._next, text))
             self._next += 1
 
+    def _emit(self, event):
+        if self._on_event:
+            try:
+                self._on_event(event)
+            except Exception:  # a failing task must not stop the reading
+                pass
+
     def _read(self, proc):
         for raw in proc.stdout:
             text = format_event(raw, self._formatter)
             if text:
                 self._add(text)
-            if self._on_notice:
-                notice = self._formatter.notice(raw)
-                if notice:
-                    try:
-                        self._on_notice(notice)
-                    except Exception:  # a failing notification must not stop the reading
-                        pass
+            if self._on_event:
+                event = self._formatter.event(raw)
+                if event:
+                    self._emit(event)
         proc.stdout.close()
         proc.wait()
         self._add(format_event(STOPPED))
+        self._emit(Event("stopped", "", "", None, STOPPED, False))
 
     def stop(self):
         proc, thread = self._proc, self._thread

@@ -51,53 +51,52 @@ LIBRARY = ('pushGameToLibrary [{"runner":"nile","app_name":"%s","title":"A Tiny 
 QUEUE_ART = QUEUE.replace('"title"', '"art_square":"https://img/sq.jpg","art_cover":"https://img/co.jpg","title"')
 
 
-class NoticeTest(unittest.TestCase):
+class EventTest(unittest.TestCase):
     def test_done_after_a_queue_entry_is_a_download(self):
         f = logs.Formatter()
         f.text(QUEUE_ART)
-        f.notice(STATUS)
-        got = f.notice(DONE)
-        self.assertEqual(tuple(got), ("Download finished", "A Tiny Sticker Tale", "https://img/sq.jpg", APP, True))
+        self.assertEqual(tuple(f.event(STATUS)), ("start", APP, "A Tiny Sticker Tale", None, "Installing", False))
+        self.assertEqual(tuple(f.event(DONE)), ("done", APP, "A Tiny Sticker Tale", 1.0, "Installed", True))
 
     def test_done_after_uninstalling_is_an_uninstallation(self):
         f = logs.Formatter()
-        self.assertIsNone(f.notice(UNINSTALLING))
+        self.assertEqual(f.event(UNINSTALLING).kind, "start")
         f.text(LIBRARY)
-        self.assertEqual(tuple(f.notice(DONE)),
-                         ("Game uninstalled", "A Tiny Sticker Tale", "https://img/sq.jpg", APP, False))
-        self.assertIsNone(f.notice(DONE_AGAIN))
+        self.assertEqual(tuple(f.event(DONE)), ("done", APP, "A Tiny Sticker Tale", 1.0, "Uninstalled", False))
+        self.assertIsNone(f.event(DONE_AGAIN))
+
+    def test_progress_is_a_fraction_with_the_details(self):
+        got = logs.Formatter().event(PROGRESS)
+        self.assertEqual((got.kind, got.fraction, got.text), ("progress", 0.0059, "4.27MB · ↓ 4.25 MB/s · ETA 00:05:23"))
+
+    def test_the_percentage_may_be_a_string_and_is_kept_in_range(self):
+        for percent, want in (('"50"', 0.5), ('"50%"', 0.5), ("150", 1.0), ("-3", 0.0), ('"x"', None), ("true", None),
+                              ("null", None)):
+            line = 'progressUpdate [{"appName":"a","status":"installing","progress":{"percent":%s}}]' % percent
+            self.assertEqual(logs.Formatter().event(line).fraction, want, percent)
+        self.assertIsNone(logs.Formatter().event('progressUpdate [{"appName":"a","status":"x"}]').fraction)
+
+    def test_failures_end_the_task(self):
+        line = 'gameStatusUpdate [{"appName":"a","status":"error"}]'
+        self.assertEqual(logs.Formatter().event(line).kind, "fail")
 
     def test_the_library_event_is_readable(self):
         self.assertEqual(logs.Formatter().text(LIBRARY), "library: A Tiny Sticker Tale (nile)")
 
-    def test_done_twice_is_noticed_once_until_the_window_passes(self):
+    def test_done_twice_is_reported_once_until_the_window_passes(self):
         f = logs.Formatter()
-        self.assertIsNotNone(f.notice(DONE, now=lambda: 100))
-        self.assertIsNone(f.notice(DONE_AGAIN, now=lambda: 101))
-        self.assertIsNotNone(f.notice(DONE, now=lambda: 100 + logs.DUPLICATE_SECONDS))
+        self.assertIsNotNone(f.event(DONE, now=lambda: 100))
+        self.assertIsNone(f.event(DONE_AGAIN, now=lambda: 101))
+        self.assertIsNotNone(f.event(DONE, now=lambda: 100 + logs.DUPLICATE_SECONDS))
 
-    def test_other_events_are_not_noticed(self):
+    def test_other_events_are_ignored(self):
         f = logs.Formatter()
-        for line in (STATUS, PROGRESS, QUEUE, "rakunctl: aborted", "gameStatusUpdate []",
+        for line in (QUEUE, "rakunctl: aborted", "gameStatusUpdate []", "progressUpdate []",
                      'gameStatusUpdate [{"appName":"x","status":"queued"}]'):
-            self.assertIsNone(f.notice(line))
+            self.assertIsNone(f.event(line))
 
-    def test_unknown_games_use_the_app_name_and_no_icon(self):
-        self.assertEqual(tuple(logs.Formatter().notice(DONE))[:3], ("Download finished", APP, ""))
-
-    def test_the_icon_is_the_logo_then_the_square_then_the_cover(self):
-        art = {"art_logo": "https://img/logo.png", "art_square": "https://img/sq.jpg", "art_cover": "https://img/co.jpg"}
-        for drop, want in ((None, "logo.png"), ("art_logo", "sq.jpg"), ("art_square", "co.jpg")):
-            if drop:
-                art.pop(drop)
-            f = logs.Formatter()
-            f.learn({"app_name": APP, "title": "T", **art})
-            self.assertTrue(f.notice(DONE)[2].endswith(want))
-
-    def test_a_icon_that_is_not_https_is_dropped(self):
-        f = logs.Formatter()
-        f.text(QUEUE.replace('"title"', '"art_square":"http://img/sq.jpg","title"'))
-        self.assertEqual(f.notice(DONE)[2], "")
+    def test_unknown_games_use_the_app_name(self):
+        self.assertEqual(logs.Formatter().event(DONE).title, APP)
 
 
 class ReaderTest(unittest.TestCase):
@@ -122,18 +121,18 @@ class ReaderTest(unittest.TestCase):
         reader.clear()
         self.assertEqual(reader.lines()[1], [])
 
-    def test_notices_reach_the_callback_and_a_failing_one_does_not_stop_the_reading(self):
+    def test_events_reach_the_callback_and_a_failing_one_does_not_stop_the_reading(self):
         seen = []
 
-        def on_notice(notice):
-            seen.append(tuple(notice)[:3])
+        def on_event(event):
+            seen.append(event.kind)
             raise RuntimeError("boom")
 
-        reader = logs.LogReader(on_notice)
+        reader = logs.LogReader(on_event)
         script = "print(%r); print(%r); print(%r)" % (QUEUE, DONE, DONE_AGAIN)
         reader.start([sys.executable, "-c", script])
         reader._thread.join(5)
-        self.assertEqual(seen, [("Download finished", "A Tiny Sticker Tale", "")])
+        self.assertEqual(seen, ["done", "stopped"])
         self.assertEqual(len(reader.lines()[1]), 4)
 
     def test_stop_ends_a_running_stream(self):
