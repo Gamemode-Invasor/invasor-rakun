@@ -47,6 +47,7 @@ DONE = 'gameStatusUpdate [{"appName":"%s","runner":"nile","status":"done"}]' % A
 DONE_AGAIN = 'gameStatusUpdate [{"appName":"%s","status":"done"}]' % APP
 UNINSTALLING = 'gameStatusUpdate [{"appName":"%s","runner":"nile","status":"uninstalling"}]' % APP
 UNINSTALLED_EVENT = 'gameStatusUpdate [{"appName":"%s","runner":"nile","status":"uninstalled"}]' % APP
+IMPORTING = 'gameStatusUpdate [{"appName":"%s","runner":"nile","status":"importing"}]' % APP
 LIBRARY = ('pushGameToLibrary [{"runner":"nile","app_name":"%s","title":"A Tiny Sticker Tale",'
            '"art_square":"https://img/sq.jpg","is_installed":false}]' % APP)
 QUEUE_ART = QUEUE.replace('"title"', '"art_square":"https://img/sq.jpg","art_cover":"https://img/co.jpg","title"')
@@ -67,11 +68,27 @@ class EventTest(unittest.TestCase):
                          ("notice", APP, "A Tiny Sticker Tale", None, "Game uninstalled", False, "https://img/sq.jpg"))
         self.assertIsNone(f.event(DONE_AGAIN))
 
+    def test_an_import_is_a_notice_with_no_task(self):
+        f = logs.Formatter()
+        f.text(LIBRARY)
+        self.assertIsNone(f.event(IMPORTING))
+        self.assertEqual(tuple(f.event(DONE)),
+                         ("notice", APP, "A Tiny Sticker Tale", None, "Game imported", True, "https://img/sq.jpg"))
+
+    def test_a_repeated_done_still_closes_a_task_but_asks_for_no_refresh(self):
+        f = logs.Formatter()
+        f.event(UNINSTALLING)
+        self.assertEqual(f.event(UNINSTALLED_EVENT, now=lambda: 100).kind, "notice")
+        f.event(STATUS)  # installed again at once: its done falls inside the window
+        again = f.event(DONE, now=lambda: 101)
+        self.assertEqual((again.kind, again.installed), ("done", False))
+        self.assertIsNone(f.event(DONE_AGAIN, now=lambda: 102))  # nothing is left open
+
     def test_uninstalled_alone_is_enough_and_done_after_it_is_not_repeated(self):
         f = logs.Formatter()
         f.event(UNINSTALLING)
         self.assertEqual(f.event(UNINSTALLED_EVENT, now=lambda: 100).kind, "notice")
-        self.assertIsNone(f.event(DONE, now=lambda: 101))
+        self.assertIsNone(f.event(DONE, now=lambda: 101))  # not notified twice
 
     def test_progress_is_a_fraction_with_the_details(self):
         got = logs.Formatter().event(PROGRESS)

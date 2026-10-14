@@ -79,6 +79,10 @@ def _notify(title, body, icon):
 
 def _follow_task(event):
     if event.kind == "notice":
+        with _tasks_lock:
+            task = _tasks.pop(event.app, None)
+        if task:  # it should not have one: don't leave it running
+            task.done(event.text)
         _notify(event.text, event.title, event.icon)
         return
     with _tasks_lock:

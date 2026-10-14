@@ -289,6 +289,14 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(backend.ctx.tasks, [])
         backend.ctx.notify.assert_called_once_with("Game uninstalled", "G", "https://x/i.png", sound="toast")
 
+    def test_a_notice_closes_a_task_left_open_for_that_game(self):
+        backend._on_event(Event("start", "app1", "G", None, "Installing", False, ""))
+        with mock.patch.object(backend.threading, "Thread"):
+            backend._on_event(Event("notice", "app1", "G", None, "Game imported", True, ""))
+        self.assertEqual(backend.ctx.tasks[0].calls[-1], ("done", "Game imported"))
+        self.assertEqual(backend._tasks, {})
+        backend._refreshing.discard("app1")
+
     def test_notify_survives_a_refusal_and_retries_without_a_bad_icon(self):
         backend.ctx.notify.side_effect = [InvalidArgument("icon"), None]
         backend._notify("Game uninstalled", "G", "https://x/bad")

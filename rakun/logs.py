@@ -16,6 +16,7 @@ Event = collections.namedtuple("Event", "kind app title fraction text installed 
 # Rakun ends both an installation and an uninstallation with status "done"; what came before tells which one.
 DOWNLOADED = "Installed"
 UNINSTALLED = "Game uninstalled"
+IMPORTED = "Game imported"
 ACTIVE = ("installing", "updating", "repairing", "moving", "extracting")
 FAILED = ("error", "failed", "canceled", "cancelled", "aborted")
 
@@ -48,6 +49,7 @@ class Formatter:
         self.icons = {}
         self.noticed = {}
         self.last_status = {}
+        self.opened = set()  # games with a start or progress event and no end yet
 
     def title(self, app):
         return self.titles.get(app) or app or "?"
@@ -73,24 +75,34 @@ class Formatter:
         title = self.title(app)[:MAX_TITLE]
         if name == "progressUpdate":
             progress = item.get("progress") if isinstance(item.get("progress"), dict) else {}
+            self.opened.add(app)
             return Event("progress", app, title, _fraction(progress.get("percent")), self.progress_text(item), False, "")
         before = self.last_status.get(app)
         self.last_status[app] = status
         if status in ACTIVE:
+            self.opened.add(app)
             return Event("start", app, title, None, status.capitalize(), False, "")
         if status in FAILED:
+            self.opened.discard(app)
             return Event("fail", app, title, None, status.capitalize(), False, "")
         gone = status == "uninstalled" or (status == "done" and before in ("uninstalling", "uninstalled"))
         if status != "done" and not gone:
             return None
-        # Rakun reports "done" twice (the second time without the runner): tell it once.
+        # Rakun reports "done" twice (the second time without the runner): notify it once. A repeated "done" is still
+        # passed on, without the refresh, while the game has a task that was left open, so that it closes.
         at = now()
-        if at - self.noticed.get(app, -DUPLICATE_SECONDS) < DUPLICATE_SECONDS:
+        repeated = at - self.noticed.get(app, -DUPLICATE_SECONDS) < DUPLICATE_SECONDS
+        if not repeated:
+            self.noticed[app] = at
+        left_open = app in self.opened
+        self.opened.discard(app)
+        if repeated and not left_open:
             return None
-        self.noticed[app] = at
         if gone:  # an uninstallation is too quick for a task: only a notification
-            return Event("notice", app, title, None, UNINSTALLED, False, self.icons.get(app, ""))
-        return Event("done", app, title, 1.0, DOWNLOADED, True, "")
+            return None if repeated else Event("notice", app, title, None, UNINSTALLED, False, self.icons.get(app, ""))
+        if before == "importing":  # so is an import
+            return None if repeated else Event("notice", app, title, None, IMPORTED, True, self.icons.get(app, ""))
+        return Event("done", app, title, 1.0, DOWNLOADED, not repeated, "")
 
     def progress_text(self, item):
         p = item.get("progress") or {}

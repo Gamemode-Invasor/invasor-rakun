@@ -36,7 +36,7 @@ The heavy operations are tasks in Invasor's panel, so the core itself announces 
 its toast sound) and the panel shows their progress bar: every game Rakun installs (percentage, size,
 speed and ETA, read from `rakunctl events` while Rakun runs, even if the Logs tab is closed), and installing or
 updating Rakun itself (without a bar, only the phase). A task still open when Rakun stops is marked as failed.
-Uninstalling a game is too quick for a task: it only shows a Steam notification. Quick actions (start, stop, check
+Uninstalling or importing a game is too quick for a task: it only shows a Steam notification. Quick actions (start, stop, check
 for updates) only show a toast in the module, as before.
 
 When an installation ends it also asks Steam to show the grid images Rakun downloaded for the game (capsule, hero,
