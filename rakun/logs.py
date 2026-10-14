@@ -10,6 +10,7 @@ MAX_TEXT = 200
 STOPPED = "-- Rakun stopped --"
 MAX_TITLE = 256
 DUPLICATE_SECONDS = 10
+LATE_PROGRESS_SECONDS = 10  # Rakun's progress may arrive after the end of the operation
 # kind: "start" | "progress" | "done" | "fail" | "notice" (quick: just a notification) | "stopped" (the stream ended); fraction: 0..1 or None
 Event = collections.namedtuple("Event", "kind app title fraction text installed icon")
 
@@ -49,6 +50,8 @@ class Formatter:
         self.icons = {}
         self.noticed = {}
         self.last_status = {}
+        self.ended = {}
+        self.queue_state = ""
         self.opened = set()  # games with a start or progress event and no end yet
 
     def title(self, app):
@@ -65,6 +68,12 @@ class Formatter:
     def event(self, line, now=time.monotonic):
         """An Event when the line is one a task follows (a game's operation starting, advancing or ending), else None."""
         name, _, rest = line.strip().partition(" ")
+        if name == "changedDMQueueInformation":
+            try:
+                self.queue_state = str(json.loads(rest)[1])
+            except (ValueError, IndexError, TypeError):
+                pass
+            return None
         if name not in ("gameStatusUpdate", "progressUpdate"):
             return None
         try:
@@ -74,6 +83,8 @@ class Formatter:
             return None
         title = self.title(app)[:MAX_TITLE]
         if name == "progressUpdate":
+            if now() - self.ended.get(app, -LATE_PROGRESS_SECONDS) < LATE_PROGRESS_SECONDS:
+                return None
             progress = item.get("progress") if isinstance(item.get("progress"), dict) else {}
             self.opened.add(app)
             return Event("progress", app, title, _fraction(progress.get("percent")), self.progress_text(item), False, "")
@@ -96,8 +107,11 @@ class Formatter:
             self.noticed[app] = at
         left_open = app in self.opened
         self.opened.discard(app)
+        self.ended[app] = at
         if repeated and not left_open:
             return None
+        if left_open and self.queue_state == "paused":  # pausing aborts the download, which Rakun ends with "done"
+            return Event("fail", app, title, None, "Paused", False, "")
         if gone:  # an uninstallation is too quick for a task: only a notification
             return None if repeated else Event("notice", app, title, None, UNINSTALLED, False, self.icons.get(app, ""))
         if before == "importing":  # so is an import

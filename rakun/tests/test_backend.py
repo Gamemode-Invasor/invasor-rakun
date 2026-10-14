@@ -319,6 +319,17 @@ class BackendTest(unittest.TestCase):
         self.assertEqual([t.calls[-1] for t in backend.ctx.tasks], [("fail", "Rakun stopped")] * 2)
         self.assertEqual(backend._tasks, {})
 
+    def test_a_task_nobody_talks_about_any_more_is_failed(self):
+        backend._on_event(Event("start", "a", "A", None, "Installing", False, ""))
+        backend._on_event(Event("start", "b", "B", None, "Installing", False, ""))
+        later = backend._seen["a"] + backend.TASK_IDLE_SECONDS
+        backend._seen["b"] = later  # B was heard of later
+        backend._expire_tasks(now=lambda: later + 1)
+        self.assertEqual(backend.ctx.tasks[0].calls[-1], ("fail", "No news from Rakun"))
+        self.assertEqual(backend.ctx.tasks[1].calls[-1][0], "update")
+        self.assertEqual(list(backend._tasks), ["b"])
+        backend._close_tasks("x")
+
     def test_a_refused_task_does_not_break_the_stream(self):
         backend.ctx.task = mock.Mock(side_effect=Unavailable("too many"))
         backend._on_event(Event("start", "a", "A", None, "Installing", False, ""))

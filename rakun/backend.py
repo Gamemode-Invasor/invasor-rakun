@@ -18,6 +18,7 @@ from .session import session_env
 ctx = None
 
 NOTIFY_SOUND = "toast"  # one of Steam's own notification sounds, see the core's ctx.notify
+TASK_IDLE_SECONDS = 300  # a task Rakun says nothing about for this long is closed
 DEFAULT_PORT = 17999
 RAKUNCTL = Path.home() / ".local/opt/rakun/rakunctl"
 RAKUN_REPO = "FranjeGueje/rakun"
@@ -39,6 +40,7 @@ _supervisor = None
 
 
 _tasks = {}  # a game's app name -> its open task in Invasor's panel
+_seen = {}  # a game's app name -> when its task last heard from Rakun
 _tasks_lock = threading.Lock()
 
 
@@ -52,6 +54,7 @@ def _open_task(app, title):
             ctx.log.warning("cannot open a task for %s: %s", title, e)
             return None
         _tasks[app] = task
+    _seen[app] = time.monotonic()
     return task
 
 
@@ -60,8 +63,20 @@ def _close_tasks(text):
     with _tasks_lock:
         tasks = list(_tasks.values())
         _tasks.clear()
+        _seen.clear()
     for task in tasks:
         task.fail(text)
+
+
+def _expire_tasks(now=time.monotonic):
+    """Fails the tasks Rakun has said nothing about for TASK_IDLE_SECONDS: its "done" got lost."""
+    with _tasks_lock:
+        stale = [app for app, at in _seen.items() if now() - at > TASK_IDLE_SECONDS]
+        tasks = [_tasks.pop(app) for app in stale if app in _tasks]
+        for app in stale:
+            _seen.pop(app, None)
+    for task in tasks:
+        task.fail("No news from Rakun")
 
 
 def _notify(title, body, icon):
@@ -81,6 +96,7 @@ def _follow_task(event):
     if event.kind == "notice":
         with _tasks_lock:
             task = _tasks.pop(event.app, None)
+            _seen.pop(event.app, None)
         if task:  # it should not have one: don't leave it running
             task.done(event.text)
         _notify(event.text, event.title, event.icon)
@@ -90,6 +106,7 @@ def _follow_task(event):
             pass
         elif event.kind in ("done", "fail"):
             task = _tasks.pop(event.app, None)
+            _seen.pop(event.app, None)
             if task:
                 (task.done if event.kind == "done" else task.fail)(event.text)
             return
@@ -166,6 +183,7 @@ def _supervise():
     while not _stop.wait(SUPERVISE_SECONDS):
         try:
             _ensure_reader()
+            _expire_tasks()
         except Exception as e:  # the loop must survive anything
             ctx.log.warning("cannot watch the events: %s", e)
 
@@ -174,6 +192,8 @@ def setup(context):
     global ctx, _supervisor
     ctx = context
     _migrate()
+    _tasks.clear()
+    _seen.clear()
     _stop.clear()
     _supervisor = threading.Thread(target=_supervise, daemon=True)
     _supervisor.start()

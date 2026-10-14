@@ -84,6 +84,23 @@ class EventTest(unittest.TestCase):
         self.assertEqual((again.kind, again.installed), ("done", False))
         self.assertIsNone(f.event(DONE_AGAIN, now=lambda: 102))  # nothing is left open
 
+    def test_progress_after_the_end_does_not_reopen_the_game(self):
+        f = logs.Formatter()
+        f.event(STATUS)
+        self.assertEqual(f.event(DONE, now=lambda: 100).kind, "done")
+        self.assertIsNone(f.event(PROGRESS, now=lambda: 101))
+        self.assertEqual(f.event(PROGRESS, now=lambda: 100 + logs.LATE_PROGRESS_SECONDS).kind, "progress")
+
+    def test_done_with_the_queue_paused_is_a_pause_without_refresh(self):
+        f = logs.Formatter()
+        f.event(STATUS)
+        self.assertIsNone(f.event('changedDMQueueInformation [[],"paused"]'))
+        got = f.event(DONE)
+        self.assertEqual((got.kind, got.text, got.installed), ("fail", "Paused", False))
+        f.event('changedDMQueueInformation [[],"running"]')
+        f.event(STATUS)
+        self.assertEqual(f.event(DONE, now=lambda: 1e9).kind, "done")
+
     def test_uninstalled_alone_is_enough_and_done_after_it_is_not_repeated(self):
         f = logs.Formatter()
         f.event(UNINSTALLING)
