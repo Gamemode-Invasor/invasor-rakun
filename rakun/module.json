@@ -2,7 +2,7 @@
   "api": 1,
   "name": "Rakun",
   "version": "0.2.0",
-  "min_core": "0.2.0",
+  "min_core": "0.2.1",
   "author": "FranjeGueje",
   "description": "Download your games from third-party stores via the Rakun engine.",
   "order": 20,

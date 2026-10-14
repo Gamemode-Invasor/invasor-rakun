@@ -32,10 +32,15 @@ Three tabs:
 - **Credits**: mentions Rakun and links to its repository,
   <https://github.com/FranjeGueje/rakun>.
 
-Rakun also shows a Steam notification, the way the Noty module does, when a download finishes or a game is
-uninstalled, even if the Logs tab is closed (the module keeps `rakunctl events` open while Rakun runs). They play
-Steam's **toast** sound instead of the default achievement one. Progress is not notified, and there are no settings
-for it.
+The heavy operations are tasks in Invasor's panel, so the core itself announces when they start and end (with
+its toast sound) and the panel shows their progress bar: every game Rakun installs (percentage, size,
+speed and ETA, read from `rakunctl events` while Rakun runs, even if the Logs tab is closed), and installing or
+updating Rakun itself (without a bar, only the phase). A task still open when Rakun stops, when its download is paused, or after five minutes without news from Rakun, is marked as failed.
+A game's task is called `Rakun: <doing> <game>` (e.g. `Rakun: Installing A Tiny Sticker Tale`) and ends with what was
+done (`Installed`, `Updated`, `Repaired`, `Moved`) or how it failed (`Failed`, `Cancelled`, `Paused`). Uninstalling or
+importing a game is too quick for a task: it only shows a Steam notification, `Rakun: <game>` with `Uninstalled` or
+`Imported` as its text. Quick actions (start, stop, check
+for updates) only show a toast in the module, as before.
 
 When an installation ends it also asks Steam to show the grid images Rakun downloaded for the game (capsule, hero,
 logo and wide capsule), the way the Artwork module does after applying one, so they appear without restarting
@@ -45,7 +50,7 @@ module waits (up to 3 minutes) for Rakun to register the game and write the imag
 ## Requirements
 
 - [Rakun](https://github.com/FranjeGueje/rakun) running on the console.
-- Invasor 0.2.0 or newer (the notification sound needs `ctx.notify`'s `sound` argument).
+- Invasor 0.2.1 or newer (tasks that notify when they start and end need `ctx.task`'s `notify` argument).
 - Python 3.9+ (standard library only).
 
 ## How it works
@@ -53,7 +58,7 @@ module waits (up to 3 minutes) for Rakun to register the game and write the imag
 ```
 rakun/
   module.json   metadata
-  backend.py    open_web, install, check and update (`rakunctl self-update`), the rakun switch (rakunctl), the saved port and web access, the notifications and the grid refresh: the methods the UI calls
+  backend.py    open_web, install, check and update (`rakunctl self-update`), the rakun switch (rakunctl), the saved port and web access, the tasks of the heavy operations and the grid refresh: the methods the UI calls
   session.py    the graphical session's variables, for xdg-open
   grids.py      finds the images Rakun left in Steam's grid folder
   logs.py       reads `rakunctl events` in a thread and formats the lines

@@ -11,12 +11,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import grids
+from . import grids, texts
 from .logs import LogReader
 from .session import session_env
 
 ctx = None
 
+NOTIFY_SOUND = "toast"  # one of Steam's own notification sounds, see the core's ctx.notify
+TASK_IDLE_SECONDS = 300  # a task Rakun says nothing about for this long is closed
 DEFAULT_PORT = 17999
 RAKUNCTL = Path.home() / ".local/opt/rakun/rakunctl"
 RAKUN_REPO = "FranjeGueje/rakun"
@@ -29,13 +31,52 @@ WEB_MODES = ("local", "network")
 DEFAULT_WEB = "local"
 LEGACY_DIR = Path.home() / ".config/invasor-rakun"  # where the port and the version were kept before ctx.data
 SETTLE_TRIES = 20
-NOTIFY_SOUND = "toast"  # one of Steam's own notification sounds, see the core's ctx.notify
 
 
 SUPERVISE_SECONDS = 5
 
 _stop = threading.Event()
 _supervisor = None
+
+
+_tasks = {}  # a game's app name -> its open task in Invasor's panel
+_seen = {}  # a game's app name -> when its task last heard from Rakun
+_tasks_lock = threading.Lock()
+
+
+def _open_task(app, label):
+    """The game's task, opened on first sight (the core announces it starting and ending); None if it can't be."""
+    task = _tasks.get(app)
+    if task is None:
+        try:
+            task = ctx.task(label)
+        except ctx.Unavailable as e:
+            ctx.log.warning("cannot open the task %r: %s", label, e)
+            return None
+        _tasks[app] = task
+    _seen[app] = time.monotonic()
+    return task
+
+
+def _close_tasks(text):
+    """Fails every task still open (Rakun stopped or the module goes away)."""
+    with _tasks_lock:
+        tasks = list(_tasks.values())
+        _tasks.clear()
+        _seen.clear()
+    for task in tasks:
+        task.fail(text)
+
+
+def _expire_tasks(now=time.monotonic):
+    """Fails the tasks Rakun has said nothing about for TASK_IDLE_SECONDS: its "done" got lost."""
+    with _tasks_lock:
+        stale = [app for app, at in _seen.items() if now() - at > TASK_IDLE_SECONDS]
+        tasks = [_tasks.pop(app) for app in stale if app in _tasks]
+        for app in stale:
+            _seen.pop(app, None)
+    for task in tasks:
+        task.fail(texts.NO_NEWS)
 
 
 def _notify(title, body, icon):
@@ -49,6 +90,32 @@ def _notify(title, body, icon):
             ctx.notify(title, body, sound=NOTIFY_SOUND)
     except (ctx.Unavailable, ctx.InvalidArgument) as e:
         ctx.log.warning("cannot show the notification %r: %s", title, e)
+
+
+def _follow_task(event):
+    if event.kind == "notice":
+        with _tasks_lock:
+            task = _tasks.pop(event.app, None)
+            _seen.pop(event.app, None)
+        if task:  # it should not have one: don't leave it running
+            task.done(event.text)
+        _notify(event.title, event.text, event.icon)
+        return
+    with _tasks_lock:
+        if event.kind == "stopped":
+            pass
+        elif event.kind in ("done", "fail"):
+            task = _tasks.pop(event.app, None)
+            _seen.pop(event.app, None)
+            if task:
+                (task.done if event.kind == "done" else task.fail)(event.text)
+            return
+        else:
+            task = _open_task(event.app, event.title)
+            if task:
+                task.update(event.fraction, event.text)
+            return
+    _close_tasks(texts.RAKUN_STOPPED)
 
 
 _refreshing = set()
@@ -86,18 +153,18 @@ def _refresh_grids(app):
             _refreshing.discard(app)
 
 
-def _on_notice(notice):
-    _notify(notice.title, notice.body, notice.icon)
-    if not notice.installed:
+def _on_event(event):
+    _follow_task(event)
+    if not event.installed:
         return
     with _refreshing_lock:
-        if notice.app in _refreshing:
+        if event.app in _refreshing:
             return
-        _refreshing.add(notice.app)
-    threading.Thread(target=_refresh_grids, args=(notice.app,), daemon=True).start()
+        _refreshing.add(event.app)
+    threading.Thread(target=_refresh_grids, args=(event.app,), daemon=True).start()
 
 
-reader = LogReader(_on_notice)
+reader = LogReader(_on_event)
 
 
 def _ensure_reader():
@@ -116,6 +183,7 @@ def _supervise():
     while not _stop.wait(SUPERVISE_SECONDS):
         try:
             _ensure_reader()
+            _expire_tasks()
         except Exception as e:  # the loop must survive anything
             ctx.log.warning("cannot watch the events: %s", e)
 
@@ -124,6 +192,8 @@ def setup(context):
     global ctx, _supervisor
     ctx = context
     _migrate()
+    _tasks.clear()
+    _seen.clear()
     _stop.clear()
     _supervisor = threading.Thread(target=_supervise, daemon=True)
     _supervisor.start()
@@ -132,6 +202,7 @@ def setup(context):
 def teardown():
     _stop.set()
     reader.stop()
+    _close_tasks(texts.MODULE_UNLOADED)
     if _supervisor:
         _supervisor.join(timeout=2)
 
@@ -302,14 +373,21 @@ def install_status():
 
 def install():
     """Installs or updates Rakun with the install script of the latest release."""
-    tag = latest_tag()
-    script = _fetch("%s/%s/scripts/install.sh" % (RAW, tag))
-    tarball = "%s/download/%s/rakun-%s-linux-x64.tar.gz" % (RELEASES, tag, tag.lstrip("v"))
-    done = _run(["bash", "-s", "--", tarball], timeout=INSTALL_TIMEOUT, stdin=script)
-    if done.returncode != 0:
-        raise ctx.Unavailable("the installation failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
-    _remember(tag.lstrip("v"))
-    return install_status()
+    with ctx.task(texts.INSTALLING_RAKUN) as task:
+        task.update(None, texts.LOOKING_FOR_RELEASE)
+        tag = latest_tag()
+        task.update(None, texts.DOWNLOADING_INSTALLER)
+        script = _fetch("%s/%s/scripts/install.sh" % (RAW, tag))
+        tarball = "%s/download/%s/rakun-%s-linux-x64.tar.gz" % (RELEASES, tag, tag.lstrip("v"))
+        task.update(None, texts.installing(tag.lstrip("v")))
+        done = _run(["bash", "-s", "--", tarball], timeout=INSTALL_TIMEOUT, stdin=script)
+        if done.returncode != 0:
+            raise ctx.Unavailable("the installation failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
+        _remember(tag.lstrip("v"))
+        task.update(None, texts.CHECKING_INSTALLATION)
+        status = install_status()
+        task.done(texts.installed(tag.lstrip("v")))
+        return status
 
 
 def _self_update(*args):
@@ -331,12 +409,16 @@ def update_check():
 
 def update():
     """Updates Rakun with `rakunctl self-update` (it restarts Rakun if it runs)."""
-    _self_update()
-    _latest.update(at=0.0, tag=None)
-    status = install_status()
-    if status["latest"]:
-        _remember(status["latest"])
-    return status
+    with ctx.task(texts.UPDATING_RAKUN) as task:
+        task.update(None, texts.RUNNING_SELF_UPDATE)
+        _self_update()
+        _latest.update(at=0.0, tag=None)
+        task.update(None, texts.CHECKING_VERSION)
+        status = install_status()
+        if status["latest"]:
+            _remember(status["latest"])
+        task.done(texts.updated(status["latest"] or ""))
+        return status
 
 
 def _fetch(url):
