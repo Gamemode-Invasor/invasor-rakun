@@ -271,41 +271,49 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(start.call_args[0][0], [str(backend.RAKUNCTL), "events"])
 
     def test_a_game_is_one_task_from_its_first_event_to_done(self):
-        backend._on_event(Event("start", "app1", "G", None, "Installing", False))
-        backend._on_event(Event("progress", "app1", "G", 0.5, "4 MB", False))
+        backend._on_event(Event("start", "app1", "G", None, "Installing", False, ""))
+        backend._on_event(Event("progress", "app1", "G", 0.5, "4 MB", False, ""))
         self.assertEqual([t.label for t in backend.ctx.tasks], ["Rakun: G"])
         with mock.patch.object(backend.threading, "Thread") as thread:
-            backend._on_event(Event("done", "app1", "G", 1.0, "Installed", True))
+            backend._on_event(Event("done", "app1", "G", 1.0, "Installed", True, ""))
         self.assertEqual(backend.ctx.tasks[0].calls,
                          [("update", None, "Installing"), ("update", 0.5, "4 MB"), ("done", "Installed")])
         self.assertEqual(thread.call_args[1]["args"], ("app1",))
         backend._refreshing.discard("app1")
         backend.ctx.notify.assert_not_called()
 
-    def test_an_uninstallation_is_a_task_and_refreshes_nothing(self):
+    def test_an_uninstallation_is_only_a_notification_and_refreshes_nothing(self):
         with mock.patch.object(backend.threading, "Thread") as thread:
-            backend._on_event(Event("start", "app1", "G", None, "Uninstalling", False))
-            backend._on_event(Event("done", "app1", "G", 1.0, "Uninstalled", False))
+            backend._on_event(Event("notice", "app1", "G", None, "Game uninstalled", False, "https://x/i.png"))
         thread.assert_not_called()
-        self.assertEqual(backend.ctx.tasks[0].calls[-1], ("done", "Uninstalled"))
+        self.assertEqual(backend.ctx.tasks, [])
+        backend.ctx.notify.assert_called_once_with("Game uninstalled", "G", "https://x/i.png", sound="toast")
+
+    def test_notify_survives_a_refusal_and_retries_without_a_bad_icon(self):
+        backend.ctx.notify.side_effect = [InvalidArgument("icon"), None]
+        backend._notify("Game uninstalled", "G", "https://x/bad")
+        self.assertEqual(backend.ctx.notify.call_args_list[1][0], ("Game uninstalled", "G"))
+        backend.ctx.notify.side_effect = Unavailable("no steam")
+        backend._notify("Game uninstalled", "G", "")
+        backend.ctx.log.warning.assert_called_once()
 
     def test_progress_opens_the_task_when_the_start_was_missed_and_a_failure_ends_it(self):
-        backend._on_event(Event("progress", "app1", "G", None, "", False))
-        backend._on_event(Event("fail", "app1", "G", None, "Error", False))
+        backend._on_event(Event("progress", "app1", "G", None, "", False, ""))
+        backend._on_event(Event("fail", "app1", "G", None, "Error", False, ""))
         self.assertEqual(backend.ctx.tasks[0].calls, [("update", None, ""), ("fail", "Error")])
-        backend._on_event(Event("done", "app1", "G", 1.0, "Installed", False))  # no task: nothing to close
+        backend._on_event(Event("done", "app1", "G", 1.0, "Installed", False, ""))  # no task: nothing to close
         self.assertEqual(len(backend.ctx.tasks), 1)
 
     def test_stopping_rakun_fails_the_open_tasks(self):
-        backend._on_event(Event("start", "a", "A", None, "Installing", False))
-        backend._on_event(Event("start", "b", "B", None, "Installing", False))
-        backend._on_event(Event("stopped", "", "", None, "", False))
+        backend._on_event(Event("start", "a", "A", None, "Installing", False, ""))
+        backend._on_event(Event("start", "b", "B", None, "Installing", False, ""))
+        backend._on_event(Event("stopped", "", "", None, "", False, ""))
         self.assertEqual([t.calls[-1] for t in backend.ctx.tasks], [("fail", "Rakun stopped")] * 2)
         self.assertEqual(backend._tasks, {})
 
     def test_a_refused_task_does_not_break_the_stream(self):
         backend.ctx.task = mock.Mock(side_effect=Unavailable("too many"))
-        backend._on_event(Event("start", "a", "A", None, "Installing", False))
+        backend._on_event(Event("start", "a", "A", None, "Installing", False, ""))
         backend.ctx.log.warning.assert_called_once()
         self.assertEqual(backend._tasks, {})
 

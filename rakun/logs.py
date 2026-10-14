@@ -10,13 +10,13 @@ MAX_TEXT = 200
 STOPPED = "-- Rakun stopped --"
 MAX_TITLE = 256
 DUPLICATE_SECONDS = 10
-# kind: "start" | "progress" | "done" | "fail" | "stopped" (the stream ended); fraction: 0..1 or None
-Event = collections.namedtuple("Event", "kind app title fraction text installed")
+# kind: "start" | "progress" | "done" | "fail" | "notice" (quick: just a notification) | "stopped" (the stream ended); fraction: 0..1 or None
+Event = collections.namedtuple("Event", "kind app title fraction text installed icon")
 
 # Rakun ends both an installation and an uninstallation with status "done"; what came before tells which one.
 DOWNLOADED = "Installed"
-UNINSTALLED = "Uninstalled"
-ACTIVE = ("installing", "uninstalling", "updating", "repairing", "moving", "extracting")
+UNINSTALLED = "Game uninstalled"
+ACTIVE = ("installing", "updating", "repairing", "moving", "extracting")
 FAILED = ("error", "failed", "canceled", "cancelled", "aborted")
 
 
@@ -73,22 +73,24 @@ class Formatter:
         title = self.title(app)[:MAX_TITLE]
         if name == "progressUpdate":
             progress = item.get("progress") if isinstance(item.get("progress"), dict) else {}
-            return Event("progress", app, title, _fraction(progress.get("percent")), self.progress_text(item), False)
+            return Event("progress", app, title, _fraction(progress.get("percent")), self.progress_text(item), False, "")
         before = self.last_status.get(app)
         self.last_status[app] = status
         if status in ACTIVE:
-            return Event("start", app, title, None, status.capitalize(), False)
+            return Event("start", app, title, None, status.capitalize(), False, "")
         if status in FAILED:
-            return Event("fail", app, title, None, status.capitalize(), False)
-        if status != "done":
+            return Event("fail", app, title, None, status.capitalize(), False, "")
+        gone = status == "uninstalled" or (status == "done" and before in ("uninstalling", "uninstalled"))
+        if status != "done" and not gone:
             return None
         # Rakun reports "done" twice (the second time without the runner): tell it once.
         at = now()
         if at - self.noticed.get(app, -DUPLICATE_SECONDS) < DUPLICATE_SECONDS:
             return None
         self.noticed[app] = at
-        gone = before in ("uninstalling", "uninstalled")
-        return Event("done", app, title, 1.0, UNINSTALLED if gone else DOWNLOADED, not gone)
+        if gone:  # an uninstallation is too quick for a task: only a notification
+            return Event("notice", app, title, None, UNINSTALLED, False, self.icons.get(app, ""))
+        return Event("done", app, title, 1.0, DOWNLOADED, True, "")
 
     def progress_text(self, item):
         p = item.get("progress") or {}
@@ -185,7 +187,7 @@ class LogReader:
         proc.stdout.close()
         proc.wait()
         self._add(format_event(STOPPED))
-        self._emit(Event("stopped", "", "", None, STOPPED, False))
+        self._emit(Event("stopped", "", "", None, STOPPED, False, ""))
 
     def stop(self):
         proc, thread = self._proc, self._thread

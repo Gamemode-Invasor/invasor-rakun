@@ -46,6 +46,7 @@ class FormatTest(unittest.TestCase):
 DONE = 'gameStatusUpdate [{"appName":"%s","runner":"nile","status":"done"}]' % APP
 DONE_AGAIN = 'gameStatusUpdate [{"appName":"%s","status":"done"}]' % APP
 UNINSTALLING = 'gameStatusUpdate [{"appName":"%s","runner":"nile","status":"uninstalling"}]' % APP
+UNINSTALLED_EVENT = 'gameStatusUpdate [{"appName":"%s","runner":"nile","status":"uninstalled"}]' % APP
 LIBRARY = ('pushGameToLibrary [{"runner":"nile","app_name":"%s","title":"A Tiny Sticker Tale",'
            '"art_square":"https://img/sq.jpg","is_installed":false}]' % APP)
 QUEUE_ART = QUEUE.replace('"title"', '"art_square":"https://img/sq.jpg","art_cover":"https://img/co.jpg","title"')
@@ -55,15 +56,22 @@ class EventTest(unittest.TestCase):
     def test_done_after_a_queue_entry_is_a_download(self):
         f = logs.Formatter()
         f.text(QUEUE_ART)
-        self.assertEqual(tuple(f.event(STATUS)), ("start", APP, "A Tiny Sticker Tale", None, "Installing", False))
-        self.assertEqual(tuple(f.event(DONE)), ("done", APP, "A Tiny Sticker Tale", 1.0, "Installed", True))
+        self.assertEqual(tuple(f.event(STATUS)), ("start", APP, "A Tiny Sticker Tale", None, "Installing", False, ""))
+        self.assertEqual(tuple(f.event(DONE)), ("done", APP, "A Tiny Sticker Tale", 1.0, "Installed", True, ""))
 
-    def test_done_after_uninstalling_is_an_uninstallation(self):
+    def test_an_uninstallation_is_a_notice_with_no_task(self):
         f = logs.Formatter()
-        self.assertEqual(f.event(UNINSTALLING).kind, "start")
         f.text(LIBRARY)
-        self.assertEqual(tuple(f.event(DONE)), ("done", APP, "A Tiny Sticker Tale", 1.0, "Uninstalled", False))
+        self.assertIsNone(f.event(UNINSTALLING))
+        self.assertEqual(tuple(f.event(DONE)),
+                         ("notice", APP, "A Tiny Sticker Tale", None, "Game uninstalled", False, "https://img/sq.jpg"))
         self.assertIsNone(f.event(DONE_AGAIN))
+
+    def test_uninstalled_alone_is_enough_and_done_after_it_is_not_repeated(self):
+        f = logs.Formatter()
+        f.event(UNINSTALLING)
+        self.assertEqual(f.event(UNINSTALLED_EVENT, now=lambda: 100).kind, "notice")
+        self.assertIsNone(f.event(DONE, now=lambda: 101))
 
     def test_progress_is_a_fraction_with_the_details(self):
         got = logs.Formatter().event(PROGRESS)

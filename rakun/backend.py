@@ -17,6 +17,7 @@ from .session import session_env
 
 ctx = None
 
+NOTIFY_SOUND = "toast"  # one of Steam's own notification sounds, see the core's ctx.notify
 DEFAULT_PORT = 17999
 RAKUNCTL = Path.home() / ".local/opt/rakun/rakunctl"
 RAKUN_REPO = "FranjeGueje/rakun"
@@ -63,7 +64,23 @@ def _close_tasks(text):
         task.fail(text)
 
 
+def _notify(title, body, icon):
+    """Shows a Steam notification, as Noty does; if Steam can't show it nothing else is affected."""
+    try:
+        try:
+            ctx.notify(title, body, icon, sound=NOTIFY_SOUND)
+        except ctx.InvalidArgument:
+            if not icon:
+                raise
+            ctx.notify(title, body, sound=NOTIFY_SOUND)
+    except (ctx.Unavailable, ctx.InvalidArgument) as e:
+        ctx.log.warning("cannot show the notification %r: %s", title, e)
+
+
 def _follow_task(event):
+    if event.kind == "notice":
+        _notify(event.text, event.title, event.icon)
+        return
     with _tasks_lock:
         if event.kind == "stopped":
             pass

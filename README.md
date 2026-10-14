@@ -33,10 +33,11 @@ Three tabs:
   <https://github.com/FranjeGueje/rakun>.
 
 The heavy operations are tasks in Invasor's panel, so the core itself announces when they start and end (with
-its toast sound) and the panel shows their progress bar: every game Rakun installs or uninstalls (percentage, size,
+its toast sound) and the panel shows their progress bar: every game Rakun installs (percentage, size,
 speed and ETA, read from `rakunctl events` while Rakun runs, even if the Logs tab is closed), and installing or
 updating Rakun itself (without a bar, only the phase). A task still open when Rakun stops is marked as failed.
-Quick actions (start, stop, check for updates) only show a toast in the module, as before.
+Uninstalling a game is too quick for a task: it only shows a Steam notification. Quick actions (start, stop, check
+for updates) only show a toast in the module, as before.
 
 When an installation ends it also asks Steam to show the grid images Rakun downloaded for the game (capsule, hero,
 logo and wide capsule), the way the Artwork module does after applying one, so they appear without restarting
