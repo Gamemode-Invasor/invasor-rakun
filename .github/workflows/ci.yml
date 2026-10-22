@@ -14,5 +14,5 @@ permissions:
 
 jobs:
   module:
-    uses: Gamemode-Invasor/invasor/.github/workflows/module.yml@main
+    uses: Gamemode-Invasor/invasor/.github/workflows/module.yml@ci/actions-v7
     secrets: inherit
