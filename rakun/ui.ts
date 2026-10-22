@@ -1,7 +1,6 @@
 import { defineModule, ui } from "invasor";
 
 type Def = Parameters<typeof defineModule>[0];
-type Ctx = Parameters<NonNullable<Def["render"]>>[1];
 
 const t = {
   up: "Rakun reachable at 127.0.0.1",

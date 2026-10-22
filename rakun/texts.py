@@ -6,7 +6,6 @@ notification (a game uninstalled or imported) has the same shape: a title naming
 
 PREFIX = "Rakun"
 MAX_LABEL = 64  # what the core keeps of a task's label (and of a notification's title)
-MAX_TEXT = 256  # and of the text of a task or the body of a notification
 
 # Rakun's status of an operation on a game -> (what is being done, how it ended)
 OPERATIONS = {
@@ -54,10 +53,6 @@ def label_of(verb, game):
     """The label of a game's task: "Rakun: <doing> <game>"; the game's title is what gives way when it is long."""
     head = "%s: %s " % (PREFIX, verb)
     return head + _clip(game, MAX_LABEL - len(head))
-
-
-def text_of(text):
-    return _clip(text, MAX_TEXT)
 
 
 def installing(version):
