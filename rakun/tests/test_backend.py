@@ -1,5 +1,8 @@
+import hashlib
+import io
 import socket
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,8 +10,32 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from invasor import archive  # noqa: E402
 from rakun import backend  # noqa: E402
 from rakun.logs import Event  # noqa: E402
+
+TAG = "v0.3.0"
+TARBALL = "rakun-0.3.0-linux-x64.tar.gz"
+URL = "https://github.com/FranjeGueje/rakun/releases/download/%s/%s" % (TAG, TARBALL)
+DIGEST = "ab" * 32
+
+
+def github_answer(digest="sha256:" + DIGEST, url=URL, name=TARBALL, tag=TAG):
+    """What api.github.com/repos/…/releases/latest answers (only the keys read)."""
+    return {"tag_name": tag, "assets": [{"name": name + ".sha256", "browser_download_url": url + ".sha256"},
+                                        {"name": name, "browser_download_url": url, "digest": digest}]}
+
+
+def tarball_bytes(files):
+    """A .tar.gz with {name: text} (executable)."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        for name, text in files.items():
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), 0o755
+            tar.addfile(info, io.BytesIO(data))
+    return out.getvalue()
 
 
 class Unavailable(Exception):
@@ -65,6 +92,11 @@ class FakeCtx:
         self.steam_call = mock.Mock()
         self.log = mock.Mock()
         self.data = FakeStore()
+        self.steam = mock.Mock()
+        self.http = mock.Mock()
+        self.http.get_json.return_value = github_answer()
+        self.archive = mock.Mock(extract=archive.extract)
+        self.paths = mock.Mock()
 
     def task(self, label):
         self.tasks.append(FakeTask(label))
@@ -84,7 +116,7 @@ class BackendTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         backend.setup(FakeCtx())
-        backend._latest.update(at=0.0, tag=None)
+        backend._latest.update(at=0.0, release=None)
         patcher = mock.patch.object(backend, "is_installed", return_value=True)
         self.is_installed = patcher.start()
         self.addCleanup(patcher.stop)
@@ -94,18 +126,15 @@ class BackendTest(unittest.TestCase):
                          {"open_web", "service_status", "service_set", "port_set", "web_set", "install_status", "install",
                           "update_check", "update", "logs_get", "logs_clear"})
 
-    def test_open_web_hands_the_steam_link_to_xdg_open_with_the_session(self):
-        with mock.patch.object(backend.subprocess, "Popen") as popen, \
-                mock.patch.object(backend, "session_env", return_value={"DISPLAY": ":7"}), \
-                mock.patch.object(backend, "port_get", return_value=18000):
+    def test_open_web_opens_the_address_in_steam(self):
+        with mock.patch.object(backend, "port_get", return_value=18000):
             self.assertTrue(backend.open_web()["ok"])
-        self.assertEqual(popen.call_args[0][0], ["xdg-open", "steam://openurl/http://localhost:18000"])
-        self.assertEqual(popen.call_args[1]["env"]["DISPLAY"], ":7")
+        backend.ctx.steam.open_url.assert_called_once_with("http://localhost:18000")
 
-    def test_open_web_reports_a_missing_xdg_open(self):
-        with mock.patch.object(backend.subprocess, "Popen", side_effect=OSError("no xdg-open")):
-            with self.assertRaises(Unavailable):
-                backend.open_web()
+    def test_open_web_reports_that_nothing_could_open_it(self):
+        backend.ctx.steam.open_url.side_effect = Unavailable("neither Steam nor gio/xdg-open could open it")
+        with self.assertRaises(Unavailable):
+            backend.open_web()
 
     def test_service_set_starts_rakun_on_the_saved_port(self):
         with fake_run(0, stdout='{"running": true}') as run, mock.patch.object(backend, "port_get", return_value=18123), \
@@ -146,12 +175,10 @@ class BackendTest(unittest.TestCase):
 
     def test_service_status(self):
         with fake_run(0, stdout='{"running": true}') as run, mock.patch.object(backend, "reachable", return_value=True), \
-                mock.patch.object(backend, "port_get", return_value=17999), \
-                mock.patch.object(backend, "session_env", return_value={"X": "1"}):
+                mock.patch.object(backend, "port_get", return_value=17999):
             self.assertEqual(backend.service_status(),
                              {"active": True, "reachable": True, "port": 17999, "web": backend.web_get()})
         self.assertEqual(run.call_args[0][0], [str(backend.RAKUNCTL), "status", "--json"])
-        self.assertEqual(run.call_args[1]["env"]["X"], "1")
         with fake_run(1, stdout="not json"), mock.patch.object(backend, "reachable", return_value=False):
             self.assertFalse(backend.service_status()["active"])
 
@@ -184,65 +211,103 @@ class BackendTest(unittest.TestCase):
         self.is_installed.return_value = False
         self.assertIsNone(backend.installed_version())
 
-    def test_latest_tag_follows_the_redirect_and_is_cached(self):
-        answer = mock.MagicMock()
-        answer.__enter__.return_value.geturl.return_value = "https://github.com/FranjeGueje/rakun/releases/tag/v0.3.0"
-        with mock.patch.object(backend.urllib.request, "urlopen", return_value=answer) as urlopen:
-            self.assertEqual(backend.latest_tag(), "v0.3.0")
-            self.assertEqual(backend.latest_tag(), "v0.3.0")
-        self.assertEqual(urlopen.call_count, 1)
-        self.assertEqual(urlopen.call_args[0][0].get_method(), "HEAD")
+    def test_release_from_githubs_answer(self):
+        self.assertEqual(backend._release(github_answer()), {"version": "0.3.0", "url": URL, "sha256": DIGEST})
+        self.assertIsNone(backend._release(github_answer(digest=None))["sha256"])
+        self.assertIsNone(backend._release(github_answer(digest="sha512:" + "ab" * 64))["sha256"])
 
-    def test_latest_tag_reports_no_network_or_no_release(self):
-        with mock.patch.object(backend.urllib.request, "urlopen", side_effect=OSError("offline")):
-            with self.assertRaises(Unavailable):
-                backend.latest_tag()
-        answer = mock.MagicMock()
-        answer.__enter__.return_value.geturl.return_value = "https://github.com/FranjeGueje/rakun/releases"
-        with mock.patch.object(backend.urllib.request, "urlopen", return_value=answer):
-            with self.assertRaises(Unavailable):
-                backend.latest_tag()
+    def test_release_refuses_what_is_not_this_repositorys_tarball(self):
+        bad = [github_answer(url="https://example.com/" + TARBALL),
+               github_answer(url=URL.replace("FranjeGueje", "someone")),
+               github_answer(name="rakun-0.3.0-linux-arm64.tar.gz"),
+               github_answer(tag="nightly"), {"message": "Not Found"}, [], None]
+        for answer in bad:
+            with self.subTest(answer=answer), self.assertRaises(Unavailable):
+                backend._release(answer)
+
+    def test_latest_release_is_cached_unless_fresh(self):
+        get_json = backend.ctx.http.get_json
+        self.assertEqual(backend.latest_release()["version"], "0.3.0")
+        self.assertEqual(backend.latest_release()["version"], "0.3.0")
+        self.assertEqual(get_json.call_count, 1)
+        self.assertEqual(get_json.call_args[0][0], "https://api.github.com/repos/FranjeGueje/rakun/releases/latest")
+        backend.latest_release(fresh=True)
+        self.assertEqual(get_json.call_count, 2)
 
     def test_install_status(self):
         cases = [(None, "0.2.0", False, False), ("0.2.0", "0.2.0", True, False),
                  ("0.1.0", "0.2.0", True, True), ("", "0.2.0", True, True)]
         for version, latest, installed, update in cases:
             with mock.patch.object(backend, "installed_version", return_value=version), \
-                    mock.patch.object(backend, "latest_tag", return_value="v" + latest):
+                    mock.patch.object(backend, "latest_release", return_value={"version": latest}):
                 got = backend.install_status()
             self.assertEqual((got["installed"], got["update"], got["latest"]), (installed, update, latest))
-        with mock.patch.object(backend, "installed_version", return_value="0.1.0"), \
-                mock.patch.object(backend, "latest_tag", side_effect=Unavailable("offline")):
-            got = backend.install_status()
-        self.assertEqual((got["latest"], got["update"]), (None, False))
+        for error in (Unavailable("offline"), InvalidArgument("not JSON")):
+            with mock.patch.object(backend, "installed_version", return_value="0.1.0"), \
+                    mock.patch.object(backend, "latest_release", side_effect=error):
+                got = backend.install_status()
+            self.assertEqual((got["latest"], got["update"]), (None, False))
 
-    def test_install_runs_the_script_of_the_latest_release(self):
-        with mock.patch.object(backend, "latest_tag", return_value="v0.3.0"), \
-                mock.patch.object(backend, "_fetch", return_value="echo hi") as fetch, \
+    def _install(self, files, code=0, digest="sha256:" + DIGEST):
+        """install() with a fake download of a tarball holding `files` and the core's real extract; returns what
+        it downloaded and ran, and the tarball's sha256."""
+        data = tarball_bytes(files)
+        backend.ctx.http.get_json.return_value = github_answer(digest=digest)
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        seen = {}
+
+        def download(url, dest, checksum=None, task=None):
+            seen["download"] = (url, checksum, task)
+            Path(dest).write_bytes(data)
+            return {"path": str(dest), "sha256": hashlib.sha256(data).hexdigest()}
+
+        def run(command, **options):
+            tarball = Path(command[2])
+            seen["run"] = command
+            seen["script"] = Path(command[1]).read_text()
+            seen["sha256"] = tarball.with_name(tarball.name + ".sha256").read_text()
+            return mock.Mock(returncode=code, stderr="boom" if code else "", stdout="")
+
+        backend.ctx.http.download.side_effect = download
+        with mock.patch.object(backend, "RAKUNCTL", Path(home.name) / "opt/rakun/rakunctl"), \
                 mock.patch.object(backend, "install_status", return_value={"installed": True}), \
-                mock.patch.object(backend, "_remember") as remember, fake_run(0) as run:
-            self.assertEqual(backend.install(), {"installed": True})
-        remember.assert_called_once_with("0.3.0")
-        self.assertEqual(fetch.call_args[0][0],
-                         "https://raw.githubusercontent.com/FranjeGueje/rakun/v0.3.0/scripts/install.sh")
-        self.assertEqual(run.call_args[0][0], ["bash", "-s", "--",
-                         "https://github.com/FranjeGueje/rakun/releases/download/v0.3.0/rakun-0.3.0-linux-x64.tar.gz"])
-        self.assertEqual(run.call_args[1]["input"], "echo hi")
+                mock.patch.object(backend, "_remember") as remember, \
+                mock.patch.object(backend.subprocess, "run", side_effect=run):
+            try:
+                self.assertEqual(backend.install(), {"installed": True})
+                remember.assert_called_once_with("0.3.0")
+            finally:
+                self.assertEqual(list((Path(home.name) / "opt").iterdir()), [], "the work folder is left behind")
+        return seen, hashlib.sha256(data).hexdigest()
 
-    def test_install_reports_a_failing_script(self):
-        with mock.patch.object(backend, "latest_tag", return_value="v0.3.0"), \
-                mock.patch.object(backend, "_fetch", return_value=""), fake_run(1, "boom"):
-            with self.assertRaises(Unavailable):
-                backend.install()
+    def test_install_checks_the_tarball_and_runs_the_install_sh_it_carries(self):
+        seen, sha = self._install({"rakun/install.sh": "echo installing", "rakun/rakunctl": "#!/bin/sh"})
+        self.assertEqual(seen["download"], (URL, ("sha256", DIGEST), backend.ctx.tasks[-1]))
+        self.assertEqual(seen["run"][0], "bash")
+        self.assertTrue(seen["run"][1].endswith("/rakun/install.sh"))
+        self.assertEqual(Path(seen["run"][2]).name, TARBALL)
+        self.assertEqual(seen["script"], "echo installing")
+        self.assertEqual(seen["sha256"], "%s  %s\n" % (sha, TARBALL))
+        self.assertEqual(backend.ctx.tasks[-1].calls[-1], ("done", "Installed 0.3.0"))
 
-    def test_update_check_asks_rakunctl_and_skips_the_cache(self):
-        backend._latest.update(at=1e12, tag="v0.1.0")
-        with mock.patch.object(backend, "latest_tag", return_value="v0.3.0"), \
-                mock.patch.object(backend, "installed_version", return_value="0.2.0"), \
-                fake_run(0, stdout="rakun 0.2.0 is up to date") as run:
+    def test_install_without_a_digest_lets_the_core_ask(self):
+        seen, _ = self._install({"rakun/install.sh": ""}, digest=None)
+        self.assertIsNone(seen["download"][1])
+
+    def test_install_reports_a_tarball_without_install_sh_or_a_failing_script(self):
+        with self.assertRaisesRegex(Unavailable, "no install.sh"):
+            self._install({"rakun/rakunctl": ""})
+        with self.assertRaisesRegex(Unavailable, "boom"):
+            self._install({"rakun/install.sh": "exit 1"}, code=1)
+
+    def test_update_check_asks_github_skipping_the_cache(self):
+        backend._latest.update(at=1e12, release={"version": "0.1.0"})
+        with mock.patch.object(backend, "installed_version", return_value="0.2.0"), \
+                mock.patch.object(backend.subprocess, "run") as run:
             got = backend.update_check()
-        self.assertEqual(run.call_args[0][0][1:], ["self-update", "--check"])
-        self.assertEqual((got["update"], got["latest"], got["message"]), (True, "0.3.0", "rakun 0.2.0 is up to date"))
+        run.assert_not_called()
+        self.assertEqual((got["update"], got["latest"]), (True, "0.3.0"))
 
     def test_update_runs_self_update(self):
         with mock.patch.object(backend, "install_status", return_value={"latest": "0.3.0"}), \
@@ -252,11 +317,12 @@ class BackendTest(unittest.TestCase):
         remember.assert_called_once_with("0.3.0")
 
     def test_update_reports_failures_and_a_missing_install(self):
-        with fake_run(1, "boom"), self.assertRaises(Unavailable):
+        with fake_run(1, "boom"), self.assertRaisesRegex(Unavailable, "boom"):
             backend.update()
         self.is_installed.return_value = False
         with self.assertRaises(Unavailable):
-            backend.update_check()
+            backend.update()
+        self.assertEqual(len(backend.ctx.tasks), 1)  # no task without an installation
 
     def test_logs_only_open_the_stream_while_rakun_runs(self):
         with mock.patch.object(backend, "running", return_value=False), \
@@ -265,8 +331,7 @@ class BackendTest(unittest.TestCase):
         start.assert_not_called()
         with mock.patch.object(backend, "running", return_value=True), \
                 mock.patch.object(backend.reader, "alive", return_value=False), \
-                mock.patch.object(backend.reader, "start") as start, \
-                mock.patch.object(backend, "session_env", return_value={}):
+                mock.patch.object(backend.reader, "start") as start:
             self.assertTrue(backend.logs_get()["running"])
         self.assertEqual(start.call_args[0][0], [str(backend.RAKUNCTL), "events"])
 
@@ -337,19 +402,15 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(backend._tasks, {})
 
     def test_install_and_update_are_tasks(self):
-        with mock.patch.object(backend, "latest_tag", return_value="v0.3.0"), \
-                mock.patch.object(backend, "_fetch", return_value=""), \
-                mock.patch.object(backend, "install_status", return_value={"version": "0.3.0", "latest": "0.3.0"}), \
+        self._install({"rakun/install.sh": ""})
+        with mock.patch.object(backend, "install_status", return_value={"version": "0.3.0", "latest": "0.3.0"}), \
                 mock.patch.object(backend, "_remember"), fake_run(0):
-            backend.install()
             backend.update()
         self.assertEqual([t.label for t in backend.ctx.tasks], ["Installing Rakun", "Updating Rakun"])
         self.assertEqual([t.calls[-1][1] for t in backend.ctx.tasks], ["Installed 0.3.0", "Updated to 0.3.0"])
         self.assertEqual([t.calls[-1][0] for t in backend.ctx.tasks], ["done", "done"])
-        with mock.patch.object(backend, "latest_tag", return_value="v0.3.0"), \
-                mock.patch.object(backend, "_fetch", return_value=""), fake_run(1, "boom"):
-            with self.assertRaises(Unavailable):
-                backend.install()
+        with self.assertRaises(Unavailable):
+            self._install({"rakun/install.sh": ""}, code=1)
         self.assertEqual(backend.ctx.tasks[-1].calls[-1][0], "fail")
 
     def test_refresh_grids_tells_steam_about_each_image(self):
@@ -377,11 +438,23 @@ class BackendTest(unittest.TestCase):
                 backend._refresh_grids("app1")
         self.assertEqual(backend.ctx.steam_call.call_count, 1)
 
+    def test_refresh_grids_looks_in_every_account_and_survives_no_steam_folder(self):
+        backend.ctx.paths.userdata.return_value = ["/s/userdata/1", "/s/userdata/2"]
+        with mock.patch.object(backend.grids, "wait_for_grids", return_value=None) as wait:
+            backend._refresh_grids("app1")
+        backend.ctx.paths.userdata.assert_called_with(all=True)
+        self.assertEqual(wait.call_args[0][:2], ("app1", ["/s/userdata/1", "/s/userdata/2"]))
+        backend.ctx.paths.userdata.side_effect = Unavailable("Steam's folder wasn't found")
+        backend._refreshing.add("app1")
+        backend._refresh_grids("app1")
+        backend.ctx.steam_call.assert_not_called()
+        backend.ctx.log.warning.assert_not_called()
+        self.assertNotIn("app1", backend._refreshing)
+
     def test_the_stream_is_kept_open_without_the_logs_tab(self):
         with mock.patch.object(backend, "running", return_value=True), \
                 mock.patch.object(backend.reader, "alive", return_value=False), \
-                mock.patch.object(backend.reader, "start") as start, \
-                mock.patch.object(backend, "session_env", return_value={}):
+                mock.patch.object(backend.reader, "start") as start:
             self.assertTrue(backend._ensure_reader())
         start.assert_called_once()
 

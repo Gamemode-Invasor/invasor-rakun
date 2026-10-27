@@ -1,4 +1,4 @@
-import { defineModule, ui } from "invasor";
+import { defineModule, ui, type ModuleCtx } from "invasor";
 
 type Def = Parameters<typeof defineModule>[0];
 
@@ -80,6 +80,10 @@ const MIN_PORT = 1024;
 const MAX_PORT = 65535;
 const REFRESH_MS = 3000;
 
+function failed(ctx: ModuleCtx, error: unknown): void {
+  ctx.toast(error instanceof Error ? error.message : String(error), "error");
+}
+
 function serviceTab(): NonNullable<Def["tabs"]>[number] {
   let timer: ReturnType<typeof setInterval> | undefined;
   let refresh: (() => Promise<void>) | undefined;
@@ -87,8 +91,6 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
   return {
     label: "Service",
     async render(el, ctx) {
-      const failed = (error: unknown) =>
-        ctx.toast(error instanceof Error ? error.message : String(error), "error");
       let shown = "";
       let installing = false;
       // A poll that was already in flight when the user acted holds the old state: it must not be drawn.
@@ -104,7 +106,7 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
         try {
           [s, i] = await Promise.all([ctx.call<Status>("service_status"), ctx.call<Install>("install_status")]);
         } catch (error) {
-          failed(error);
+          failed(ctx, error);
           return;
         }
         if (started !== generation) return;
@@ -132,7 +134,7 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
                 const r = await ctx.call<Install>("update_check");
                 ctx.toast(r.update && r.latest ? t.updateAvailable(r.latest) : t.upToDate, "ok");
               } catch (error) {
-                failed(error);
+                failed(ctx, error);
               }
               installing = false;
               await draw(true);
@@ -154,7 +156,7 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
                 await ctx.call(i.installed ? "update" : "install");
                 ctx.toast(i.installed ? t.updateDone : t.installDone, "ok");
               } catch (error) {
-                failed(error);
+                failed(ctx, error);
               }
               installing = false;
               await draw(true);
@@ -182,7 +184,7 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
                   await ctx.call("service_set", { on, force: true });
                 }
               } catch (error) {
-                failed(error);
+                failed(ctx, error);
               }
               acting = false;
               await draw(true);
@@ -202,7 +204,7 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
                 await ctx.call("port_set", { port });
                 shown = key.replace(`|${s.port}|`, `|${port}|`);
               } catch (error) {
-                failed(error);
+                failed(ctx, error);
                 await draw(true);
               }
             },
@@ -218,7 +220,7 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
                 await ctx.call("web_set", { web });
                 shown = key.replace(`|${s.web}|`, `|${web}|`);
               } catch (error) {
-                failed(error);
+                failed(ctx, error);
                 await draw(true);
               }
             },
@@ -231,7 +233,7 @@ function serviceTab(): NonNullable<Def["tabs"]>[number] {
               try {
                 await ctx.call("open_web");
               } catch (error) {
-                failed(error);
+                failed(ctx, error);
               }
             },
           }),
@@ -277,7 +279,7 @@ function logsTab(): NonNullable<Def["tabs"]>[number] {
           if (logs.lines.length) list.lastElementChild?.scrollIntoView({ block: "nearest" });
           since = logs.id;
         } catch (error) {
-          ctx.toast(error instanceof Error ? error.message : String(error), "error");
+          failed(ctx, error);
         } finally {
           busy = false;
         }
@@ -293,7 +295,7 @@ function logsTab(): NonNullable<Def["tabs"]>[number] {
             try {
               await ctx.call("logs_clear");
             } catch (error) {
-              ctx.toast(error instanceof Error ? error.message : String(error), "error");
+              failed(ctx, error);
             }
             while (list.firstChild) list.removeChild(list.firstChild);
             await poll();

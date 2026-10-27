@@ -16,6 +16,8 @@ class Env:
         self.root = Path(d) / "Steam"
         self.shortcuts = Path(d) / "steam_shortcuts.json"
         self.now = 1000.0
+        # what ctx.paths.userdata(all=True) gives: every account folder, the missing ones included here
+        self.accounts = [self.root / "userdata" / a for a in ("111", "123")]
 
     def register(self, app="app1", steam_id=ID):
         self.shortcuts.write_text(json.dumps([{"appId": "other", "steamAppId": 1}, {"appId": app, "steamAppId": steam_id}]))
@@ -50,15 +52,15 @@ class GridsTest(unittest.TestCase):
         hero = self.env.image("%d_hero.jpg" % ID)
         self.env.image("%d_icon.png" % ID)  # not an artwork kind
         self.env.image("999p.png")
-        got = grids.grid_files(ID, self.env.root)
+        got = grids.grid_files(ID, self.env.accounts)
         self.assertEqual(got, {"capsule": capsule, "hero": hero})
         self.assertNotIn(old, got.values())
-        self.assertEqual(grids.grid_files(5, self.env.root), {})
+        self.assertEqual(grids.grid_files(5, self.env.accounts), {})
 
     def test_wait_returns_when_registered_and_written(self):
         self.env.register()
         self.env.image("%dp.png" % ID, age=60)
-        got = grids.wait_for_grids("app1", shortcuts=self.env.shortcuts, root=self.env.root,
+        got = grids.wait_for_grids("app1", self.env.accounts, shortcuts=self.env.shortcuts,
                                    clock=lambda: self.env.now, sleep=lambda s: None)
         self.assertEqual(got[0], ID)
         self.assertEqual(list(got[1]), ["capsule"])
@@ -70,7 +72,7 @@ class GridsTest(unittest.TestCase):
         def sleep(seconds):
             self.env.now += seconds
 
-        got = grids.wait_for_grids("app1", shortcuts=self.env.shortcuts, root=self.env.root,
+        got = grids.wait_for_grids("app1", self.env.accounts, shortcuts=self.env.shortcuts,
                                    clock=lambda: self.env.now, sleep=sleep, settle=3, poll=2)
         self.assertIsNotNone(got)
         self.assertGreaterEqual(self.env.now, 1004)
@@ -82,7 +84,7 @@ class GridsTest(unittest.TestCase):
             self.env.now += seconds
             ticks.append(seconds)
 
-        self.assertIsNone(grids.wait_for_grids("app1", shortcuts=self.env.shortcuts, root=self.env.root,
+        self.assertIsNone(grids.wait_for_grids("app1", self.env.accounts, shortcuts=self.env.shortcuts,
                                                clock=lambda: self.env.now, sleep=sleep, timeout=10, poll=3))
         self.assertTrue(ticks)
 
@@ -90,7 +92,7 @@ class GridsTest(unittest.TestCase):
         import threading
         stop = threading.Event()
         stop.set()
-        self.assertIsNone(grids.wait_for_grids("app1", stop=stop, shortcuts=self.env.shortcuts, root=self.env.root))
+        self.assertIsNone(grids.wait_for_grids("app1", self.env.accounts, stop=stop, shortcuts=self.env.shortcuts))
 
 
 if __name__ == "__main__":
