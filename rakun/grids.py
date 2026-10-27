@@ -8,7 +8,6 @@ import os
 import time
 from pathlib import Path
 
-STEAM_ROOT = Path.home() / ".local/share/Steam"
 SHORTCUTS = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "rakun" / "steam_shortcuts.json"
 # kind -> (file suffix, Steam's eAssetType)
 KINDS = {"capsule": ("p", 0), "hero": ("_hero", 1), "logo": ("_logo", 2), "wide": ("", 3)}
@@ -28,10 +27,11 @@ def steam_app_id(app_name, path=None):
     return None
 
 
-def grid_files(app_id, root=None):
-    """{kind: path} of the game's images, from the account folder whose images are the newest."""
+def grid_files(app_id, accounts):
+    """{kind: path} of the game's images, from the account folder (userdata/<account>) whose images are the newest."""
     best, newest = {}, 0.0
-    for grid in sorted(Path(root or STEAM_ROOT).glob("userdata/*/config/grid")):
+    for account in accounts:
+        grid = Path(account) / "config" / "grid"
         found = {}
         for kind, (suffix, _) in KINDS.items():
             for ext in EXTS:
@@ -45,14 +45,14 @@ def grid_files(app_id, root=None):
     return best
 
 
-def wait_for_grids(app_name, stop=None, timeout=180, poll=3, settle=3, shortcuts=None, root=None,
+def wait_for_grids(app_name, accounts, stop=None, timeout=180, poll=3, settle=3, shortcuts=None,
                    clock=time.time, sleep=time.sleep):
     """(Steam app id, {kind: path}) once Rakun has registered the game and finished writing its images, else None.
     `stop` is an Event that ends the wait."""
     deadline = clock() + timeout
     while True:
         app_id = steam_app_id(app_name, shortcuts)
-        files = grid_files(app_id, root) if app_id else {}
+        files = grid_files(app_id, accounts) if app_id else {}
         if files and all(clock() - p.stat().st_mtime >= settle for p in files.values()):
             return app_id, files
         if clock() >= deadline or (stop is not None and stop.is_set()):

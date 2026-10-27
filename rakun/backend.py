@@ -1,19 +1,16 @@
 """Rakun: install and update it, start and stop it, see whether it answers and open its web interface."""
 import base64
 import json
-import os
 import re
 import socket
 import subprocess
+import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from . import grids, texts
 from .logs import LogReader
-from .session import session_env
 
 ctx = None
 
@@ -23,10 +20,15 @@ DEFAULT_PORT = 17999
 RAKUNCTL = Path.home() / ".local/opt/rakun/rakunctl"
 RAKUN_REPO = "FranjeGueje/rakun"
 RELEASES = "https://github.com/%s/releases" % RAKUN_REPO
-RAW = "https://raw.githubusercontent.com/%s" % RAKUN_REPO
+API_LATEST = "https://api.github.com/repos/%s/releases/latest" % RAKUN_REPO
+DOWNLOAD_PREFIX = RELEASES + "/download/"
+ASSET = "rakun-%s-linux-x64.tar.gz"
+SHA256 = re.compile(r"sha256:([0-9a-f]{64})")
+MAX_RELEASE_JSON = 1 << 20
 INSTALL_TIMEOUT = 600
 LATEST_TTL = 300
 VERSION = re.compile(r"\d+\.\d+\.\d+")
+TAG = re.compile(r"v?(%s)" % VERSION.pattern)
 WEB_MODES = ("local", "network")
 DEFAULT_WEB = "local"
 LEGACY_DIR = Path.home() / ".config/invasor-rakun"  # where the port and the version were kept before ctx.data
@@ -80,7 +82,7 @@ def _expire_tasks(now=time.monotonic):
 
 
 def _notify(title, body, icon):
-    """Shows a Steam notification, as Noty does; if Steam can't show it nothing else is affected."""
+    """Shows a Steam notification; if Steam can't show it nothing else is affected."""
     try:
         try:
             ctx.notify(title, body, icon, sound=NOTIFY_SOUND)
@@ -101,21 +103,19 @@ def _follow_task(event):
             task.done(event.text)
         _notify(event.title, event.text, event.icon)
         return
+    if event.kind == "stopped":
+        _close_tasks(texts.RAKUN_STOPPED)
+        return
     with _tasks_lock:
-        if event.kind == "stopped":
-            pass
-        elif event.kind in ("done", "fail"):
+        if event.kind in ("done", "fail"):
             task = _tasks.pop(event.app, None)
             _seen.pop(event.app, None)
             if task:
                 (task.done if event.kind == "done" else task.fail)(event.text)
-            return
         else:
             task = _open_task(event.app, event.title)
             if task:
                 task.update(event.fraction, event.text)
-            return
-    _close_tasks(texts.RAKUN_STOPPED)
 
 
 _refreshing = set()
@@ -127,7 +127,7 @@ def _refresh_grids(app):
     after writing one: without it they show only after restarting Steam. Rakun registers the game and downloads
     the images some time after the installation ends, so it waits for them."""
     try:
-        found = grids.wait_for_grids(app, stop=_stop)
+        found = grids.wait_for_grids(app, ctx.paths.userdata(all=True), stop=_stop)
         if not found:
             ctx.log.info("no grid images to refresh for %s", app)
             return
@@ -146,6 +146,8 @@ def _refresh_grids(app):
                 ctx.log.info("no live refresh (%s): the grid images show after restarting Steam", e)
                 return
         ctx.log.info("refreshed the grid images of %s (Steam app %s)", app, app_id)
+    except ctx.Unavailable as e:  # Steam's folder wasn't found
+        ctx.log.info("no grid images to refresh for %s: %s", app, e)
     except Exception as e:  # a thread of its own: nothing may escape
         ctx.log.warning("cannot refresh the grid images of %s: %s", app, e)
     finally:
@@ -172,7 +174,7 @@ def _ensure_reader():
     active = running()
     if active and not reader.alive():
         try:
-            reader.start([str(RAKUNCTL), "events"], dict(os.environ, **session_env()))
+            reader.start([str(RAKUNCTL), "events"])
         except OSError as e:
             raise ctx.Unavailable("cannot read the events: %s" % e)
     return active
@@ -273,21 +275,14 @@ def web_set(web):
 
 
 def open_web():
-    """Opens rakun's address in Steam's browser through a steam://openurl link (works in Game Mode)."""
-    url = "http://localhost:%d" % port_get()
-    try:
-        subprocess.Popen(["xdg-open", "steam://openurl/" + url], env=dict(os.environ, **session_env()),
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except OSError as e:
-        raise ctx.Unavailable("cannot open the browser: %s" % e)
+    """Opens rakun's address in Steam's browser (works in Game Mode)."""
+    ctx.steam.open_url("http://localhost:%d" % port_get())
     return {"ok": True}
 
 
-def _run(command, timeout=30, stdin=None):
-    """Runs a command in the user's session (the Invasor service has none of its own)."""
+def _run(command, timeout=30):
     try:
-        return subprocess.run(command, env=dict(os.environ, **session_env()), input=stdin,
-                              capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise ctx.Unavailable("cannot run %s: %s" % (command[0], e))
 
@@ -341,92 +336,100 @@ def installed_version():
     return _remembered()
 
 
-_latest = {"at": 0.0, "tag": None}
+_latest = {"at": 0.0, "release": None}
 
 
-def latest_tag(now=time.monotonic):
-    """The tag of the latest published release (e.g. "v0.2.0"), from where /releases/latest redirects to."""
-    if _latest["tag"] and now() - _latest["at"] < LATEST_TTL:
-        return _latest["tag"]
-    request = urllib.request.Request(RELEASES + "/latest", method="HEAD")
+def _release(answer):
+    """{"version", "url", "sha256"} of the x64 tarball in GitHub's answer for the latest release. sha256 is the
+    asset's digest, None if GitHub gives none; the URL must be this repository's own release download."""
     try:
-        with urllib.request.urlopen(request, timeout=10) as answer:
-            tag = answer.geturl().rstrip("/").rsplit("/", 1)[-1]
-    except (OSError, urllib.error.URLError) as e:
-        raise ctx.Unavailable("cannot reach GitHub: %s" % e)
-    if not VERSION.search(tag):
-        raise ctx.Unavailable("GitHub has no published release")
-    _latest.update(at=now(), tag=tag)
-    return tag
+        tag = answer["tag_name"]
+        version = TAG.fullmatch(tag).group(1)
+        name = ASSET % version
+        asset = next(a for a in answer["assets"] if a.get("name") == name)
+        url = asset["browser_download_url"]
+        if url != "%s%s/%s" % (DOWNLOAD_PREFIX, tag, name):
+            raise ValueError(url)
+    except (KeyError, TypeError, AttributeError, StopIteration, ValueError):
+        raise ctx.Unavailable("GitHub has no usable release")
+    digest = SHA256.fullmatch(str(asset.get("digest")))
+    return {"version": version, "url": url, "sha256": digest.group(1) if digest else None}
 
 
-def install_status():
+def latest_release(now=time.monotonic, fresh=False):
+    """The latest published release (see _release), asked to GitHub at most every LATEST_TTL seconds."""
+    if not fresh and _latest["release"] and now() - _latest["at"] < LATEST_TTL:
+        return _latest["release"]
+    release = _release(ctx.http.get_json(API_LATEST, max_bytes=MAX_RELEASE_JSON))
+    _latest.update(at=now(), release=release)
+    return release
+
+
+def _check(done, what):
+    if done.returncode != 0:
+        raise ctx.Unavailable("%s: %s" % (what, done.stderr.strip() or done.stdout.strip() or done.returncode))
+
+
+def install_status(fresh=False):
     """Whether Rakun is installed, which version, the latest published one and whether an update is due."""
     version = installed_version()
     try:
-        latest = latest_tag().lstrip("v")
-    except ctx.Unavailable:
+        latest = latest_release(fresh=fresh)["version"]
+    except (ctx.Unavailable, ctx.InvalidArgument):
         latest = None
     return {"installed": version is not None, "version": version or "", "latest": latest,
             "update": version is not None and latest is not None and version != latest}
 
 
 def install():
-    """Installs or updates Rakun with the install script of the latest release."""
+    """Installs or updates Rakun from the tarball of the latest release, checked against GitHub's sha256, with
+    the install.sh that tarball carries."""
     with ctx.task(texts.INSTALLING_RAKUN) as task:
         task.update(None, texts.LOOKING_FOR_RELEASE)
-        tag = latest_tag()
-        task.update(None, texts.DOWNLOADING_INSTALLER)
-        script = _fetch("%s/%s/scripts/install.sh" % (RAW, tag))
-        tarball = "%s/download/%s/rakun-%s-linux-x64.tar.gz" % (RELEASES, tag, tag.lstrip("v"))
-        task.update(None, texts.installing(tag.lstrip("v")))
-        done = _run(["bash", "-s", "--", tarball], timeout=INSTALL_TIMEOUT, stdin=script)
-        if done.returncode != 0:
-            raise ctx.Unavailable("the installation failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
-        _remember(tag.lstrip("v"))
+        release = latest_release(fresh=True)
+        version = release["version"]
+        work = RAKUNCTL.parent.parent  # the same filesystem as the installation
+        try:
+            work.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=work, prefix=".rakun-install-") as tmp:
+                tarball = Path(tmp) / (ASSET % version)
+                checksum = ("sha256", release["sha256"]) if release["sha256"] else None  # None: the core asks
+                got = ctx.http.download(release["url"], tarball, checksum=checksum, task=task)
+                # install.sh wants the checksum next to the tarball
+                tarball.with_name(tarball.name + ".sha256").write_text("%s  %s\n" % (got["sha256"], tarball.name))
+                task.update(None, texts.installing(version))
+                script = ctx.archive.extract(tarball, Path(tmp) / "x", single_root=True) / "install.sh"
+                if not script.is_file():
+                    raise ctx.Unavailable("the release has no install.sh")
+                _check(_run(["bash", str(script), str(tarball)], timeout=INSTALL_TIMEOUT), "the installation failed")
+        except OSError as e:
+            raise ctx.Unavailable("cannot install rakun: %s" % e)
+        _remember(version)
         task.update(None, texts.CHECKING_INSTALLATION)
         status = install_status()
-        task.done(texts.installed(tag.lstrip("v")))
+        task.done(texts.installed(version))
         return status
 
 
-def _self_update(*args):
-    """Runs `rakunctl self-update`, which only works on an install made by install.sh."""
-    if not is_installed():
-        raise ctx.Unavailable("rakun is not installed")
-    done = _run([str(RAKUNCTL), "self-update", *args], timeout=INSTALL_TIMEOUT)
-    if done.returncode != 0:
-        raise ctx.Unavailable("rakunctl failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
-    return done.stdout.strip()
-
-
 def update_check():
-    """Asks rakunctl whether there is a newer Rakun, skipping the cache of the latest release."""
-    message = _self_update("--check")
-    _latest.update(at=0.0, tag=None)
-    return dict(install_status(), message=message)
+    """Asks GitHub for the latest release, skipping the cache."""
+    return install_status(fresh=True)
 
 
 def update():
-    """Updates Rakun with `rakunctl self-update` (it restarts Rakun if it runs)."""
+    """Updates Rakun with `rakunctl self-update` (it restarts Rakun if it runs; only for an install made by
+    install.sh)."""
+    if not is_installed():
+        raise ctx.Unavailable("rakun is not installed")
     with ctx.task(texts.UPDATING_RAKUN) as task:
         task.update(None, texts.RUNNING_SELF_UPDATE)
-        _self_update()
-        _latest.update(at=0.0, tag=None)
+        _check(_run([str(RAKUNCTL), "self-update"], timeout=INSTALL_TIMEOUT), "rakunctl failed")
         task.update(None, texts.CHECKING_VERSION)
-        status = install_status()
+        status = install_status(fresh=True)
         if status["latest"]:
             _remember(status["latest"])
         task.done(texts.updated(status["latest"] or ""))
         return status
-
-
-def _fetch(url):
-    try:
-        with urllib.request.urlopen(url, timeout=30) as answer:
-            return answer.read().decode()
-    except (OSError, urllib.error.URLError, ValueError) as e:
-        raise ctx.Unavailable("cannot download %s: %s" % (url, e))
 
 
 def running():
@@ -457,8 +460,7 @@ def service_set(on, force=False):
     done = _run(command)
     if done.returncode != 0 and not on and not force and "--force" in done.stderr + done.stdout:
         return dict(service_status(), busy=True)
-    if done.returncode != 0:
-        raise ctx.Unavailable("rakunctl failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
+    _check(done, "rakunctl failed")
     # The slider shows what really happened, so give rakun a moment to settle.
     for _ in range(SETTLE_TRIES):
         status = service_status()

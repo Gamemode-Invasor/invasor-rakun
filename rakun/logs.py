@@ -188,10 +188,10 @@ class LogReader:
     def alive(self):
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, command, env=None):
+    def start(self, command):
         if self.alive():
             return
-        self._proc = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        self._proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                       text=True, errors="replace")
         self._thread = threading.Thread(target=self._read, args=(self._proc,), daemon=True)
         self._thread.start()
