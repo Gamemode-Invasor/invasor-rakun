@@ -56,7 +56,7 @@ CI runs the tests against the core's `main`; pushing a `vX.Y.Z` tag (it must mat
 
 ```bash
 python3 ../invasor/tools/pack_module.py rakun     # typecheck, build, tests -> rakun-<version>.zip
-python3 ../invasor/tools/install_module.py rakun-0.2.0.zip
+python3 ../invasor/tools/install_module.py rakun-0.3.0.zip
 ```
 
 or ⚙ Settings › Install module on the console.
